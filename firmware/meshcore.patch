@@ -1,0 +1,199 @@
+diff --git a/examples/simple_repeater/MyMesh.cpp b/examples/simple_repeater/MyMesh.cpp
+index 61b6c149..91404f77 100644
+--- a/examples/simple_repeater/MyMesh.cpp
++++ b/examples/simple_repeater/MyMesh.cpp
+@@ -839,6 +839,9 @@ void MyMesh::onControlDataRecv(mesh::Packet* packet) {
+     if (id.matches(self_id)) {
+       return;
+     }
++#ifdef MCOTA_ENABLED
++    mcota_service.onNeighbourAnswer();
++#endif
+     putNeighbour(id, rtc_clock.getCurrentTime(), packet->getSNR());
+   }
+ }
+@@ -950,6 +953,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
+   acl.load(_fs, self_id);
+   // TODO: key_store.begin();
+   region_map.load(_fs);
++#ifdef MCOTA_ENABLED
++  mcota_service.begin(this, self_id.pub_key);
++#endif
+ 
+   // establish default-scope
+   {
+@@ -1196,6 +1202,9 @@ void MyMesh::clearStats() {
+ }
+ 
+ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
++#ifdef MCOTA_ENABLED
++  if (!region_load_active && mcota_service.handleCommand(sender_timestamp == 0, command, reply)) return;
++#endif
+   if (region_load_active) {
+     if (StrHelper::isBlank(command)) {  // empty/blank line, signal to terminate 'load' operation
+       region_map = temp_map;  // copy over the temp instance as new current map
+@@ -1287,6 +1296,9 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
+ }
+ 
+ void MyMesh::loop() {
++#ifdef MCOTA_ENABLED
++  mcota_service.loop();
++#endif
+ #ifdef WITH_BRIDGE
+   bridge.loop();
+ #endif
+@@ -1338,3 +1350,51 @@ bool MyMesh::hasPendingWork() const {
+ #endif
+   return _mgr->getOutboundTotal() > 0;
+ }
++
++#ifdef MCOTA_ENABLED
++bool MyMesh::mcotaSend(const uint8_t* data, uint32_t len, const uint8_t* path, uint8_t hop_size, uint8_t hops) {
++  mesh::Packet* pkt = createRawData(data, len);
++  if (pkt == NULL) return false;
++  pkt->header &= ~PH_ROUTE_MASK;
++  pkt->header |= ROUTE_TYPE_DIRECT;
++  pkt->path_len = 0;
++  if (hops > 0) {
++    pkt->setPathHashSizeAndCount(hop_size, hops);
++    memcpy(pkt->path, path, (size_t)hop_size * hops);
++  }
++  getTables()->markSeen(pkt);
++  sendPacket(pkt, 8, 0);
++  return true;
++}
++
++uint32_t MyMesh::mcotaAirtime(uint32_t len) {
++  return _radio->getEstAirtimeFor(len + 2);
++}
++
++uint32_t MyMesh::mcotaRandom() {
++  uint32_t value;
++  getRNG()->random((uint8_t*)&value, sizeof(value));
++  return value;
++}
++
++bool MyMesh::mcotaVerify(const uint8_t* pub_key, const uint8_t* sig, const uint8_t* msg, uint32_t len) {
++  mesh::Identity id(pub_key);
++  return id.verify(sig, msg, len);
++}
++
++void MyMesh::mcotaReboot() {
++  board.reboot();
++}
++
++void MyMesh::mcotaProbe() {
++  sendNodeDiscoverReq();
++}
++
++void MyMesh::mcotaCommand(char* command, char* reply) {
++  handleCommand(0, command, reply);
++}
++
++void MyMesh::onRawDataRecv(mesh::Packet* packet) {
++  if (packet->getPathHashCount() == 0) mcota_service.onPacket(packet->payload, packet->payload_len);
++}
++#endif
+diff --git a/examples/simple_repeater/MyMesh.h b/examples/simple_repeater/MyMesh.h
+index dc893258..3d3245ab 100644
+--- a/examples/simple_repeater/MyMesh.h
++++ b/examples/simple_repeater/MyMesh.h
+@@ -28,6 +28,9 @@
+ #include <helpers/ArduinoHelpers.h>
+ #include <helpers/ClientACL.h>
+ #include <helpers/CommonCLI.h>
++#ifdef MCOTA_ENABLED
++#include <helpers/mcota/McotaService.h>
++#endif
+ #include <helpers/IdentityStore.h>
+ #include <helpers/SimpleMeshTables.h>
+ #include <helpers/StaticPoolPacketManager.h>
+@@ -78,7 +81,11 @@ struct NeighbourInfo {
+ 
+ #define PACKET_LOG_FILE  "/packet_log"
+ 
+-class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
++class MyMesh : public mesh::Mesh, public CommonCLICallbacks
++#ifdef MCOTA_ENABLED
++  , public McotaHost
++#endif
++{
+   FILESYSTEM* _fs;
+   uint32_t last_millis;
+   uint64_t uptime_millis;
+@@ -229,6 +236,17 @@ public:
+   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
+   void loop();
+ 
++#ifdef MCOTA_ENABLED
++  bool mcotaSend(const uint8_t* data, uint32_t len, const uint8_t* path, uint8_t hop_size, uint8_t hops) override;
++  uint32_t mcotaAirtime(uint32_t len) override;
++  uint32_t mcotaRandom() override;
++  bool mcotaVerify(const uint8_t* pub_key, const uint8_t* sig, const uint8_t* msg, uint32_t len) override;
++  void mcotaReboot() override;
++  void mcotaProbe() override;
++  void mcotaCommand(char* command, char* reply) override;
++  void onRawDataRecv(mesh::Packet* packet) override;
++#endif
++
+ #if defined(WITH_BRIDGE)
+   void setBridgeState(bool enable) override {
+     if (enable == bridge.isRunning()) return;
+diff --git a/variants/rak4631/platformio.ini b/variants/rak4631/platformio.ini
+index d2781d9f..b36ecd28 100644
+--- a/variants/rak4631/platformio.ini
++++ b/variants/rak4631/platformio.ini
+@@ -270,3 +270,24 @@ build_src_filter = ${rak4631.build_src_filter}
+   +<../examples/kiss_modem/>
+ lib_deps =
+   ${rak4631.lib_deps}
++
++[env:RAK_4631_repeater_mcota]
++extends = env:RAK_4631_repeater
++board_build.ldscript = boards/nrf52840_s140_v6_mcota_compact.ld
++build_flags =
++  ${env:RAK_4631_repeater.build_flags}
++  -D MCOTA_ENABLED
++  -D MCOTA_LAYOUT_S140_V6
++  -D MCOTA_BOARD='"rak4631"'
++  -D MCOTA_BOARD_RAK4631
++  -I src/helpers/mcota
++build_src_filter = ${env:RAK_4631_repeater.build_src_filter}
++  +<helpers/mcota/*.cpp>
++  +<helpers/mcota/*.c>
++
++[env:RAK_4631_repeater_mcota_test]
++extends = env:RAK_4631_repeater_mcota
++build_flags =
++  ${env:RAK_4631_repeater_mcota.build_flags}
++  -D MCOTA_TEST
++  -D MCOTA_BUDGET_PPM=50000
+diff --git a/variants/xiao_nrf52/platformio.ini b/variants/xiao_nrf52/platformio.ini
+index b40ebbc3..3eb7ab76 100644
+--- a/variants/xiao_nrf52/platformio.ini
++++ b/variants/xiao_nrf52/platformio.ini
+@@ -118,3 +118,24 @@ build_src_filter = ${Xiao_nrf52.build_src_filter}
+   +<../examples/kiss_modem/*.cpp>
+ lib_deps =
+   ${Xiao_nrf52.lib_deps}
++
++[env:Xiao_nrf52_repeater_mcota]
++extends = env:Xiao_nrf52_repeater
++board_build.ldscript = boards/nrf52840_s140_v7_mcota.ld
++build_flags =
++  ${env:Xiao_nrf52_repeater.build_flags}
++  -D MCOTA_ENABLED
++  -D MCOTA_LAYOUT_S140_V7
++  -D MCOTA_BOARD='"xiao_nrf52"'
++  -D MCOTA_BOARD_XIAO_NRF52
++  -I src/helpers/mcota
++build_src_filter = ${env:Xiao_nrf52_repeater.build_src_filter}
++  +<helpers/mcota/*.cpp>
++  +<helpers/mcota/*.c>
++
++[env:Xiao_nrf52_repeater_mcota_test]
++extends = env:Xiao_nrf52_repeater_mcota
++build_flags =
++  ${env:Xiao_nrf52_repeater_mcota.build_flags}
++  -D MCOTA_TEST
++  -D MCOTA_BUDGET_PPM=50000

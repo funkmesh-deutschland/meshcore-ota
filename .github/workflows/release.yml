@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: meshcore-dev/MeshCore
+          ref: 81dbae592ffad40b4212bc0b37e82b38da08f4bc
+          path: build/MeshCore
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r tools/requirements.txt
+      - run: make -C sim test MESHCORE=$PWD/build/MeshCore PYTHON=python
+
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      previous: ${{ steps.next.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: next
+        run: |
+          base=$(cat VERSION)
+          previous=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          patch=0
+          if [ -n "$previous" ] && [ "${previous#v}" != "${previous#v$base.}" ]; then
+            patch=$(( ${previous##*.} + 1 ))
+          fi
+          echo "version=v$base.$patch" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            source: dist/meshcore-ota
+            asset: meshcore-ota-linux
+          - os: windows-latest
+            source: dist/meshcore-ota.exe
+            asset: meshcore-ota-windows.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r tools/requirements.txt pyinstaller
+      - shell: bash
+        run: echo "VERSION = \"${{ needs.version.outputs.version }}\"" > tools/mcota_version.py
+      - run: python tools/build_app.py
+      - shell: bash
+        run: mv "${{ matrix.source }}" "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    if: github.event_name == 'push'
+    needs: [test, version, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PREVIOUS: ${{ needs.version.outputs.previous }}
+        run: |
+          range="HEAD"
+          if [ -n "$PREVIOUS" ]; then range="$PREVIOUS..HEAD"; fi
+          git log --no-merges --pretty='- %s' "$range" > notes.md
+          {
+            echo "# Changelog"
+            echo
+            echo "## $VERSION ($(date +%Y-%m-%d))"
+            echo
+            cat notes.md
+            for tag in $(git tag --list 'v*' --sort=-v:refname); do
+              echo
+              echo "## $tag ($(git log -1 --format=%ad --date=short "$tag"))"
+              echo
+              older=$(git tag --list 'v*' --sort=-v:refname | grep -A1 -x "$tag" | tail -n +2)
+              if [ -n "$older" ]; then git log --no-merges --pretty='- %s' "$older..$tag"; else git log --no-merges --pretty='- %s' "$tag"; fi
+            done
+          } > CHANGELOG.md
+          gh release create "$VERSION" assets/meshcore-ota-linux assets/meshcore-ota-windows.exe CHANGELOG.md --title "MeshCore-OTA $VERSION" --notes-file notes.md --target "$GITHUB_SHA"

@@ -1,0 +1,23 @@
+MeshCore-OTA
+Copyright (C) 2026 Funkmesh Deutschland e. V. (https://funkmesh.de)
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, version 3.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+Public License in the file LICENSE for more details.
+
+Additional terms under section 7(b) of the GNU General Public License,
+version 3:
+
+Copies and modified versions of this program must preserve this notice
+and the attribution "MeshCore-OTA by Funkmesh Deutschland e. V." in the
+Appropriate Legal Notices displayed by the program and in the
+documentation distributed with it.
+
+MeshCore-OTA builds on MeshCore (https://github.com/meshcore-dev/MeshCore),
+which is released under the MIT licence. MeshCore-OTA is an independent
+project and is not affiliated with the MeshCore project.
