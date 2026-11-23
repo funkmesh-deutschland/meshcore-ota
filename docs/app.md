@@ -230,7 +230,7 @@ The program builds every firmware itself:
 3. It compiles with PlatformIO. For nRF52840 it additionally builds the loader.
 4. It stores the build in `firmware/` and the installation files in `install/`.
 
-Requirements: an internet connection and Python 3. If the program does not find `pio` on the computer, it sets up PlatformIO once in `cache/venv/`. During the first build PlatformIO downloads about 1 GB. The environment variable `MCOTA_PIO` can be used to point to an existing PlatformIO. The log of a build is in `cache/build-<device>-<build>.log`.
+Requirements: an internet connection and Python 3.9 or newer. On Windows install it from python.org, the entries from the Microsoft Store do not work. If the program does not find `pio` on the computer, it sets up PlatformIO once in `cache/venv/`. During the first build PlatformIO downloads about 1 GB. The environment variable `MCOTA_PIO` can be used to point to an existing PlatformIO. The log of a build is in `cache/build-<device>-<build>.log`.
 
 For nRF52840 the program stays with the compiler it used to build the first firmware (recorded in `cache/compiler.txt`), even if MeshCore specifies a different one for a newer version. A compiler change alters almost every function and makes the next update correspondingly large. With `--switch-compiler` it adopts the compiler from MeshCore. For ESP32 it does not pin the compiler.
 

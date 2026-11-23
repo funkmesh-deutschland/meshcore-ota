@@ -76,9 +76,38 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
 
+  firmware:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset: meshcore-ota-linux
+          - os: ubuntu-22.04-arm
+            asset: meshcore-ota-linux-arm64
+          - os: windows-latest
+            asset: meshcore-ota-windows.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: app
+      - shell: bash
+        run: |
+          cd app
+          chmod +x "${{ matrix.asset }}"
+          "./${{ matrix.asset }}" init
+          "./${{ matrix.asset }}" install Xiao_nrf52_repeater --version v1.18.0
+          ls firmware/xiao_nrf52-v1.18.0+1.bin install/Xiao_nrf52_repeater-v1.18.0+1-mcota.zip install/Xiao_nrf52_repeater-v1.18.0+1-mcota.uf2
+
   release:
     if: github.event_name == 'push'
-    needs: [test, version, build]
+    needs: [test, version, build, firmware]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

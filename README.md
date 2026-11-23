@@ -50,7 +50,7 @@ mv meshcore-ota-linux meshcore-ota
 chmod +x meshcore-ota
 ```
 
-To build firmware, the computer needs an internet connection and, once, Python 3. The program sets up the build tool PlatformIO itself during the first build (about 1 GB, a few minutes).
+To build firmware, the computer needs an internet connection and, once, Python 3.9 or newer. On Windows install it from python.org, the entries from the Microsoft Store do not work. The program sets up the build tool PlatformIO itself during the first build (about 1 GB, a few minutes).
 
 ### 2. Start
 

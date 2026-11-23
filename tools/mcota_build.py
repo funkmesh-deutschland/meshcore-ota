@@ -153,19 +153,35 @@ def find_pio(tools):
     pio = os.path.join(venv, "Scripts" if os.name == "nt" else "bin", "pio.exe" if os.name == "nt" else "pio")
     if os.path.exists(pio):
         return pio
-    python = None if getattr(sys, "frozen", False) else sys.executable
-    python = python or shutil.which("python3") or shutil.which("python") or shutil.which("py")
+    python = system_python()
     if not python:
-        raise SystemExit("Building the firmware needs Python 3 on this computer once (python.org). "
-                         "With it meshcore-ota sets up the build tool PlatformIO by itself.")
+        raise SystemExit("Building the firmware needs Python 3.9 or newer on this computer once (python.org). "
+                         "With it meshcore-ota sets up the build tool PlatformIO by itself."
+                         + (" On Windows the entries python.exe and python3.exe from the Microsoft Store do not count, install Python from python.org." if os.name == "nt" else ""))
     say("Setting up the build tool PlatformIO (once, a few minutes) ...")
+    os.makedirs(tools, exist_ok=True)
     log = os.path.join(tools, "setup.log")
-    if run([python, "-m", "venv", venv], log=log) != 0:
+    if run(python + ["-m", "venv", venv], log=log) != 0:
         raise SystemExit(f"Python could not create its own environment. Details in {log}")
-    pip = os.path.join(venv, "Scripts" if os.name == "nt" else "bin", "pip")
-    if run([pip, "install", "platformio"], log=log) != 0:
-        raise SystemExit(f"PlatformIO could not be set up. Is there an internet connection? Details in {log}")
+    inner = os.path.join(venv, "Scripts" if os.name == "nt" else "bin", "python.exe" if os.name == "nt" else "python")
+    if run([inner, "-m", "pip", "install", "platformio"], log=log) != 0:
+        raise SystemExit(f"PlatformIO could not be set up. Details in {log}")
     return pio
+
+
+def system_python():
+    candidates = [] if getattr(sys, "frozen", False) else [[sys.executable]]
+    names = (["py", "-3"], ["python"], ["python3"]) if os.name == "nt" else (["python3"], ["python"])
+    candidates += [[shutil.which(name[0])] + name[1:] for name in names if shutil.which(name[0])]
+    for candidate in candidates:
+        try:
+            result = subprocess.run(candidate + ["-c", "import sys, venv; print(sys.version_info >= (3, 9))"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0 and result.stdout.strip() == b"True":
+            return candidate
+    return None
 
 
 def fetch_source(commit, tools):
@@ -818,7 +834,7 @@ def build_version(name, version, commit, folder, test=False, switch=False):
     say(f"Building {name} {label} with MeshCore-OTA from the MeshCore source code (commit {commit}).")
     pio = find_pio(tools)
     source = fetch_source(commit, tools)
-    work = os.path.join(tools, "build", f"{name}-{label}")
+    work = os.path.join(tools, "build", hashlib.sha256(f"{name}-{label}".encode()).hexdigest()[:8] if os.name == "nt" else f"{name}-{label}")
     shutil.rmtree(work, ignore_errors=True)
     shutil.copytree(source, work, ignore=shutil.ignore_patterns(".git", ".pio"))
     base = resources()
