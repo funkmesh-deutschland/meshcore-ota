@@ -39,7 +39,8 @@ Download the file for your operating system from the [releases](https://github.c
 
 | Operating system | File |
 | --- | --- |
-| Linux | `meshcore-ota-linux` |
+| Linux (x86-64) | `meshcore-ota-linux` |
+| Linux (ARM64, for example Raspberry Pi with a 64-bit system) | `meshcore-ota-linux-arm64` |
 | Windows | `meshcore-ota-windows.exe` |
 
 Put the file into a folder of its own, for example `meshcore-ota`. All data is later created right next to the program. On Linux, rename the file and make it executable:
@@ -49,7 +50,7 @@ mv meshcore-ota-linux meshcore-ota
 chmod +x meshcore-ota
 ```
 
-To build firmware, the computer needs an internet connection and, once, Python 3. The program sets up the build tool PlatformIO itself during the first build (about 1 GB, a few minutes).
+To build firmware, the computer needs an internet connection and, once, Python 3.9 or newer. On Windows install it from python.org, the entries from the Microsoft Store do not work. The program sets up the build tool PlatformIO itself during the first build (about 1 GB, a few minutes).
 
 ### 2. Start
 
@@ -135,6 +136,8 @@ All data is stored right next to the program: for the prebuilt executable in its
 | `releases.json` | released versions |
 | `repeaters.json` | your repeaters with the build they last reported |
 | `config.json` | companion port, airtime, test mode |
+| `custom.json` | firmware source and build flags |
+| `sources/` | optional source folders, one per version |
 
 The name of a build consists of the MeshCore version and the revision of the settings, for example `v1.18.0+3`.
 
@@ -180,6 +183,17 @@ meshcore-ota self-update
 ```
 
 downloads the new executable and replaces only that file. Keys, firmware, packages and settings are kept. `meshcore-ota version` shows the version. More in [docs/update.md](docs/update.md).
+
+## Custom firmware
+
+Repeaters that need their own changes, for example additional sensors, can be built from another git repository (public or private), from source folders in `sources/<version>/`, or with extra build flags per device:
+
+```
+meshcore-ota custom --source owner/name
+meshcore-ota custom --device Xiao_nrf52_repeater --define ENV_INCLUDE_BME280=1
+```
+
+More in [docs/custom.md](docs/custom.md).
 
 ## Supported devices
 
@@ -229,6 +243,7 @@ The same tests run on GitHub on every push to `main` and on every pull request.
 | [docs/keys.md](docs/keys.md) | keys, import, key change |
 | [docs/settings.md](docs/settings.md) | settings and presets |
 | [docs/update.md](docs/update.md) | program update, releases, CI |
+| [docs/custom.md](docs/custom.md) | firmware from your own git repository or source folder, build flags |
 | [docs/concept.md](docs/concept.md) | trust model, distribution, loader, limitations |
 | [docs/devices.md](docs/devices.md) | device classes and memory layout |
 | [docs/protocol.md](docs/protocol.md) | radio protocol and package format |

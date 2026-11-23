@@ -12,7 +12,7 @@ meshcore-ota self-update
 
 Sequence:
 
-1. The program downloads the file for its own operating system (`meshcore-ota-linux` or `meshcore-ota-windows.exe`) next to the running executable.
+1. The program downloads the file for its own operating system (`meshcore-ota-linux`, `meshcore-ota-linux-arm64` or `meshcore-ota-windows.exe`) next to the running executable.
 2. It renames the running file to `<name>.old` and puts the new one in its place. If that fails, it restores the old one.
 3. On Linux it deletes the old file immediately, on Windows on the next start.
 4. Then restart the program.
@@ -41,7 +41,8 @@ Every release on GitHub contains:
 
 | File | Contents |
 | --- | --- |
-| `meshcore-ota-linux` | program for Linux |
+| `meshcore-ota-linux` | program for Linux on x86-64 |
+| `meshcore-ota-linux-arm64` | program for Linux on ARM64 |
 | `meshcore-ota-windows.exe` | program for Windows |
 | `CHANGELOG.md` | changes of all versions |
 

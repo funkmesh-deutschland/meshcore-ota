@@ -4,7 +4,7 @@
 
 ## Setup
 
-Prebuilt executables are available in the [releases](https://github.com/funkmesh-deutschland/meshcore-ota/releases): `meshcore-ota-linux` and `meshcore-ota-windows.exe`. Python is not required for them, except once for setting up the build tool (see [Building firmware](#building-firmware)).
+Prebuilt executables are available in the [releases](https://github.com/funkmesh-deutschland/meshcore-ota/releases): `meshcore-ota-linux`, `meshcore-ota-linux-arm64` and `meshcore-ota-windows.exe`. Python is not required for them, except once for setting up the build tool (see [Building firmware](#building-firmware)).
 
 From source:
 
@@ -43,6 +43,8 @@ meshcore-ota --dir /home/user/meshcore-ota devices
 | `releases.json` | released versions |
 | `repeaters.json` | your repeaters with name, last reported firmware and time |
 | `config.json` | companion port, airtime, test mode, hops |
+| `custom.json` | firmware source and build flags, see [custom.md](custom.md) |
+| `sources/` | optional source folders, one per version, see [custom.md](custom.md) |
 
 The device type is a short name that the firmware also reports over the air, for example `xiao_nrf52` or `rak4631`. For other devices it is derived from the name of the MeshCore environment (lower case, without `_repeater`, at most 15 characters).
 
@@ -72,6 +74,7 @@ Above the menu are the version, the folder, the key ID, the companion port, the 
 | 6 Companion connection | select the port, airtime, test mode |
 | 7 Key | show the key ID, import a private key, see [keys.md](keys.md) |
 | 8 Update program | download a new version from GitHub, see [update.md](update.md) |
+| 9 Custom firmware | firmware source and build flags, see [custom.md](custom.md) |
 | 0 Quit | |
 
 ### Release versions
@@ -163,6 +166,7 @@ By default the companion transmits for at most 0.5 % of the time. In the menu (m
 | `meshcore-ota pubkey <file>` | shows the public key and key ID for a private key |
 | `meshcore-ota version` | shows the version of the program |
 | `meshcore-ota self-update` | downloads the latest executable from GitHub, see [update.md](update.md) |
+| `meshcore-ota custom` | shows or sets the firmware source and build flags, see [custom.md](custom.md). Options: `--source`, `--device`, `--define`, `--undefine`, `--clear` |
 
 ### Devices and firmware
 
@@ -226,7 +230,7 @@ The program builds every firmware itself:
 3. It compiles with PlatformIO. For nRF52840 it additionally builds the loader.
 4. It stores the build in `firmware/` and the installation files in `install/`.
 
-Requirements: an internet connection and Python 3. If the program does not find `pio` on the computer, it sets up PlatformIO once in `cache/venv/`. During the first build PlatformIO downloads about 1 GB. The environment variable `MCOTA_PIO` can be used to point to an existing PlatformIO. The log of a build is in `cache/build-<device>-<build>.log`.
+Requirements: an internet connection and Python 3.9 or newer. On Windows install it from python.org, the entries from the Microsoft Store do not work. If the program does not find `pio` on the computer, it sets up PlatformIO once in `cache/venv/`. During the first build PlatformIO downloads about 1 GB. The environment variable `MCOTA_PIO` can be used to point to an existing PlatformIO. The log of a build is in `cache/build-<device>-<build>.log`.
 
 For nRF52840 the program stays with the compiler it used to build the first firmware (recorded in `cache/compiler.txt`), even if MeshCore specifies a different one for a newer version. A compiler change alters almost every function and makes the next update correspondingly large. With `--switch-compiler` it adopts the compiler from MeshCore. For ESP32 it does not pin the compiler.
 
