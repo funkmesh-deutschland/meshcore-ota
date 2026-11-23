@@ -39,7 +39,8 @@ Download the file for your operating system from the [releases](https://github.c
 
 | Operating system | File |
 | --- | --- |
-| Linux | `meshcore-ota-linux` |
+| Linux (x86-64) | `meshcore-ota-linux` |
+| Linux (ARM64, for example Raspberry Pi with a 64-bit system) | `meshcore-ota-linux-arm64` |
 | Windows | `meshcore-ota-windows.exe` |
 
 Put the file into a folder of its own, for example `meshcore-ota`. All data is later created right next to the program. On Linux, rename the file and make it executable:

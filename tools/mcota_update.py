@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import stat
 import sys
 
@@ -16,7 +17,11 @@ def numbers(text):
 
 
 def asset_name():
-    return "meshcore-ota-windows.exe" if os.name == "nt" else "meshcore-ota-linux"
+    if os.name == "nt":
+        return "meshcore-ota-windows.exe"
+    if platform.machine().lower() in ("aarch64", "arm64"):
+        return "meshcore-ota-linux-arm64"
+    return "meshcore-ota-linux"
 
 
 def check(timeout=TIMEOUT):

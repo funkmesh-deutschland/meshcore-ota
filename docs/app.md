@@ -4,7 +4,7 @@
 
 ## Setup
 
-Prebuilt executables are available in the [releases](https://github.com/funkmesh-deutschland/meshcore-ota/releases): `meshcore-ota-linux` and `meshcore-ota-windows.exe`. Python is not required for them, except once for setting up the build tool (see [Building firmware](#building-firmware)).
+Prebuilt executables are available in the [releases](https://github.com/funkmesh-deutschland/meshcore-ota/releases): `meshcore-ota-linux`, `meshcore-ota-linux-arm64` and `meshcore-ota-windows.exe`. Python is not required for them, except once for setting up the build tool (see [Building firmware](#building-firmware)).
 
 From source:
 
