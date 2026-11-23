@@ -909,7 +909,7 @@ def build_version(name, version, commit, folder, test=False, switch=False):
     stem = os.path.join(first_dir, f"{name}-{label}-mcota")
     files = install_files(target, folder, name, label)
     write_dfu_zip(stem + ".zip", image, target)
-    write_uf2(stem + ".uf2", [(target["loader"], loader), (target["app"], app), (target["status"], bytes([0xFF]) * PAGE * target["status_pages"])], target["family"])
+    write_uf2(stem + ".uf2", [(target["loader"], loader), (target["app"], app)], target["family"])
     shutil.rmtree(work, ignore_errors=True)
     say(f"Done: {len(app)} bytes, {(len(app) + PAGE - 1) // PAGE} of {target['slot_pages']} pages.")
     say(f"  For updates by radio:       {firmware_path}")

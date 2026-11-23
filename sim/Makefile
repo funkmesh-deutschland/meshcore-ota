@@ -19,6 +19,7 @@ test: test_sha256 test_inflate test_boot test_compact test_node test_esp node_st
 	$(PYTHON) test_provider.py fixture ./node_stdio
 	$(PYTHON) test_companion.py fixture
 	$(PYTHON) test_versions.py
+	$(PYTHON) test_uf2.py
 
 test_esp: test_esp.c $(CORE) $(HEADERS)
 	$(CC) $(CFLAGS) -DMCOTA_MAX_PAGES=448u -I$(ED) -o $@ test_esp.c $(CORE) -x c -w $(ED)/verify.c $(ED)/ge.c $(ED)/fe.c $(ED)/sc.c $(ED)/sha512.c
