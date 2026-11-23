@@ -48,16 +48,21 @@ Every release on GitHub contains:
 
 The release notes list the commits since the previous release.
 
+## Branches
+
+Work happens on the branch `develop`. Changes reach it through pull requests from feature branches. `main` only receives a pull request from `develop` when a version is ready, and that merge creates the release. Several changes therefore end up in one version.
+
 ## CI
 
 The workflow `.github/workflows/release.yml` runs on every push to `main`, on every pull request and on manual dispatch.
 
 | Job | What it does |
 | --- | --- |
-| `test` | checks out MeshCore at commit `75b04ef`, installs `tools/requirements.txt` and runs `make -C sim test` |
+| `test` | checks out MeshCore at a pinned commit, installs `tools/requirements.txt` and runs `make -C sim test` |
 | `version` | determines the next version number from `VERSION` and the latest tag |
-| `build` | builds the executables on Linux and Windows with `python tools/build_app.py` |
-| `release` | only on a push to `main` and only if tests and build succeeded: creates the release with tag, executables and changelog |
+| `build` | builds the executables for Linux, Linux ARM64 and Windows with `python tools/build_app.py` |
+| `firmware` | builds a repeater firmware with each finished executable on its own system |
+| `release` | only on a push to `main` and only if all other jobs succeeded: creates the release with tag, executables and changelog |
 
 Every merge to `main` therefore results in a release.
 
