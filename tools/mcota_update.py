@@ -2,8 +2,8 @@ import json
 import os
 import stat
 import sys
-import urllib.request
 
+import mcota_net
 from mcota_version import VERSION
 
 REPO = "funkmesh-deutschland/meshcore-ota"
@@ -21,9 +21,7 @@ def asset_name():
 
 def check(timeout=TIMEOUT):
     try:
-        request = urllib.request.Request(LATEST_URL, headers={"User-Agent": "meshcore-ota", "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode())
+        data = json.loads(mcota_net.fetch(LATEST_URL, timeout, {"Accept": "application/vnd.github+json"}).decode())
     except Exception:
         return None
     version = data.get("tag_name", "")
@@ -51,9 +49,8 @@ def install(found, timeout=60.0):
         raise SystemExit(f"Version {found['version']} contains no file for this operating system.")
     target = sys.executable
     fresh = target + ".new"
-    request = urllib.request.Request(found["url"], headers={"User-Agent": "meshcore-ota"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response, open(fresh, "wb") as fh:
+        with mcota_net.open_url(found["url"], timeout) as response, open(fresh, "wb") as fh:
             while True:
                 chunk = response.read(1 << 16)
                 if not chunk:
@@ -62,7 +59,7 @@ def install(found, timeout=60.0):
     except Exception as error:
         if os.path.exists(fresh):
             os.remove(fresh)
-        raise SystemExit(f"The download failed: {error}")
+        raise SystemExit(f"The download failed: {mcota_net.reason(error)}.")
     if os.path.getsize(fresh) < 1 << 20:
         os.remove(fresh)
         raise SystemExit("The downloaded file is incomplete.")

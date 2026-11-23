@@ -1136,7 +1136,7 @@ def newest_release(args, wanted=None):
     import mcota_build
     found = mcota_build.releases(folder(args, "cache"), fresh=not getattr(args, "offline", False))
     if not found:
-        raise SystemExit("The list of MeshCore versions could not be loaded. Is there an internet connection?")
+        raise SystemExit(mcota_build.releases_problem())
     if wanted:
         match = [item for item in found if item[0] == wanted or item[0] == "v" + wanted]
         if not match:
