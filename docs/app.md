@@ -43,6 +43,8 @@ meshcore-ota --dir /home/user/meshcore-ota devices
 | `releases.json` | released versions |
 | `repeaters.json` | your repeaters with name, last reported firmware and time |
 | `config.json` | companion port, airtime, test mode, hops |
+| `custom.json` | firmware source and build flags, see [custom.md](custom.md) |
+| `sources/` | optional source folders, one per version, see [custom.md](custom.md) |
 
 The device type is a short name that the firmware also reports over the air, for example `xiao_nrf52` or `rak4631`. For other devices it is derived from the name of the MeshCore environment (lower case, without `_repeater`, at most 15 characters).
 
@@ -72,6 +74,7 @@ Above the menu are the version, the folder, the key ID, the companion port, the 
 | 6 Companion connection | select the port, airtime, test mode |
 | 7 Key | show the key ID, import a private key, see [keys.md](keys.md) |
 | 8 Update program | download a new version from GitHub, see [update.md](update.md) |
+| 9 Custom firmware | firmware source and build flags, see [custom.md](custom.md) |
 | 0 Quit | |
 
 ### Release versions
@@ -163,6 +166,7 @@ By default the companion transmits for at most 0.5 % of the time. In the menu (m
 | `meshcore-ota pubkey <file>` | shows the public key and key ID for a private key |
 | `meshcore-ota version` | shows the version of the program |
 | `meshcore-ota self-update` | downloads the latest executable from GitHub, see [update.md](update.md) |
+| `meshcore-ota custom` | shows or sets the firmware source and build flags, see [custom.md](custom.md). Options: `--source`, `--device`, `--define`, `--undefine`, `--clear` |
 
 ### Devices and firmware
 

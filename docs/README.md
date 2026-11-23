@@ -10,6 +10,7 @@ MeshCore-OTA delivers firmware updates to MeshCore repeaters over LoRa. A step-b
 | [keys.md](keys.md) | key pair, importing an existing key, key change |
 | [settings.md](settings.md) | settings and presets, lock on the repeater |
 | [update.md](update.md) | program update, releases, version numbers, CI |
+| [custom.md](custom.md) | firmware from another git repository or from source folders, build flags |
 
 ## Technical
 

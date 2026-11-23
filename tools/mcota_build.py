@@ -14,7 +14,90 @@ import zipfile
 
 import mcota_net
 
-SOURCE_URL = "https://github.com/meshcore-dev/MeshCore/archive/{commit}.tar.gz"
+DEFAULT_SOURCE = "meshcore-dev/MeshCore"
+SOURCE_URL = "https://github.com/{repo}/archive/{commit}.tar.gz"
+CUSTOM_FILE = "custom.json"
+LOCAL_SOURCES = "sources"
+LOCAL_PREFIX = "local-"
+local_cache = {}
+
+
+def load_custom(folder):
+    path = os.path.join(folder, CUSTOM_FILE)
+    data = {"source": DEFAULT_SOURCE, "flags": {}}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            data.update(json.load(fh))
+    check_custom(data)
+    return data
+
+
+def save_custom(folder, data):
+    check_custom(data)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, CUSTOM_FILE), "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+
+
+def check_custom(data):
+    if not re.fullmatch(r"(?!-)[A-Za-z0-9_.:/@~+\\-]+", data.get("source", "")):
+        raise SystemExit("The firmware source must be a git URL, a local path or a GitHub repository in the form owner/name.")
+    for device, flags in data.get("flags", {}).items():
+        for flag in flags.split():
+            if not re.fullmatch(r"-[DU][A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_.+-]*)?", flag):
+                raise SystemExit(f"{device}: '{flag}' is not a valid build flag. Use the form -DNAME or -DNAME=value.")
+
+
+def source_repo(folder):
+    return load_custom(folder)["source"]
+
+
+def git_url(source):
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source) and not os.path.isdir(source):
+        return f"https://github.com/{source}.git"
+    return source
+
+
+def git(arguments, cwd=None, timeout=300):
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    env.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+    try:
+        result = subprocess.run(["git"] + arguments, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    except FileNotFoundError:
+        raise RuntimeError("git is not installed. A firmware source other than the official MeshCore repository needs git")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("git did not answer in time")
+    if result.returncode != 0:
+        lines = [line for line in result.stderr.decode(errors="replace").strip().splitlines() if line.strip()]
+        raise RuntimeError((lines[-1] if lines else "git failed") + ". For a private repository, git must be able to reach it without asking for a password")
+    return result.stdout.decode(errors="replace")
+
+
+def local_versions(folder):
+    found = []
+    root = os.path.join(folder, LOCAL_SOURCES)
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        if re.fullmatch(r"v\d+(?:\.\d+)*", name) and os.path.exists(os.path.join(root, name, "platformio.ini")):
+            found.append(name)
+    return found
+
+
+def local_digest(folder):
+    known = local_cache.get(folder)
+    if known and time.time() - known[0] < 10:
+        return known[1]
+    state = hashlib.sha256()
+    for version in local_versions(folder):
+        root = os.path.join(folder, LOCAL_SOURCES, version)
+        for path, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in (".git", ".pio"))
+            for name in sorted(files):
+                info = os.stat(os.path.join(path, name))
+                state.update(f"{os.path.relpath(os.path.join(path, name), root)}:{info.st_size}:{info.st_mtime_ns}\n".encode())
+        state.update(version.encode())
+    value = state.hexdigest()[:16] if local_versions(folder) else ""
+    local_cache[folder] = (time.time(), value)
+    return value
 PAGE = 4096
 
 TARGETS = {
@@ -86,12 +169,18 @@ def find_pio(tools):
 
 
 def fetch_source(commit, tools):
+    home = os.path.dirname(os.path.abspath(tools))
+    if commit.startswith(LOCAL_PREFIX):
+        return os.path.join(home, LOCAL_SOURCES, commit[len(LOCAL_PREFIX):])
     target = os.path.join(tools, "sources", commit)
     if os.path.isdir(target):
         return target
+    repo = source_repo(home)
     say(f"Downloading the MeshCore source code, commit {commit} ...")
+    if repo != DEFAULT_SOURCE:
+        return fetch_git(repo, commit, tools, target)
     try:
-        data = mcota_net.fetch(SOURCE_URL.format(commit=commit), 120)
+        data = mcota_net.fetch(SOURCE_URL.format(repo=repo, commit=commit), 120)
     except Exception as error:
         raise SystemExit(f"The MeshCore source code could not be downloaded: {mcota_net.reason(error)}.")
     temp = target + ".part"
@@ -109,6 +198,25 @@ def fetch_source(commit, tools):
         raise SystemExit("The MeshCore archive does not have the expected layout.")
     os.rename(os.path.join(temp, inner[0]), target)
     shutil.rmtree(temp, ignore_errors=True)
+    return target
+
+
+def fetch_git(repo, commit, tools, target):
+    tag = next((name for name, sha in cached_tags(os.path.join(tools, "versions.json"), repo) or [] if sha.startswith(commit)), None)
+    if tag is None:
+        raise SystemExit(f"No tag for commit {commit} is known in {repo}.")
+    temp = target + ".part"
+    shutil.rmtree(temp, ignore_errors=True)
+    os.makedirs(temp)
+    try:
+        git(["init", "-q"], cwd=temp)
+        git(["fetch", "-q", "--depth", "1", git_url(repo), "refs/tags/" + tag], cwd=temp, timeout=600)
+        git(["checkout", "-q", "FETCH_HEAD"], cwd=temp)
+    except RuntimeError as error:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise SystemExit(f"The source code could not be fetched from {repo}: {error}.")
+    shutil.rmtree(os.path.join(temp, ".git"), ignore_errors=True)
+    os.rename(temp, target)
     return target
 
 
@@ -238,7 +346,7 @@ def toolchain(pio_env):
     raise SystemExit("The compiler for the loader was not found.")
 
 
-REFS_URL = "https://github.com/meshcore-dev/MeshCore.git/info/refs?service=git-upload-pack"
+REFS_URL = "https://github.com/{repo}.git/info/refs?service=git-upload-pack"
 REFS_KEEP = 3600
 releases_error = ""
 
@@ -249,13 +357,13 @@ def natural(text):
 
 def parse_refs(text):
     tags = {}
-    for sha, name, peeled in re.findall(r"([0-9a-f]{40}) refs/tags/([^\s^\x00]+)(\^\{\})?", text):
+    for sha, name, peeled in re.findall(r"([0-9a-f]{40})\s+refs/tags/([^\s^\x00]+)(\^\{\})?", text):
         if peeled or name not in tags:
             tags[name] = sha
     return sorted(tags.items())
 
 
-def cached_tags(cache):
+def cached_tags(cache, repo=DEFAULT_SOURCE):
     if not os.path.exists(cache):
         return None
     try:
@@ -264,33 +372,44 @@ def cached_tags(cache):
     except ValueError:
         return None
     if isinstance(data, dict):
-        return [tuple(item) for item in data.get("tags", [])]
+        return [tuple(item) for item in data.get("tags", [])] if data.get("repo", DEFAULT_SOURCE) == repo else None
+    if repo != DEFAULT_SOURCE:
+        return None
     return [(entry.get("name", ""), entry.get("commit", {}).get("sha", "")) for entry in data]
 
 
 def releases(tools, kind="repeater", fresh=True):
     global releases_error
     cache = os.path.join(tools, "versions.json")
-    tags = cached_tags(cache)
+    home = os.path.dirname(os.path.abspath(tools))
+    repo = source_repo(home)
+    tags = cached_tags(cache, repo)
     recent = tags is not None and time.time() - os.path.getmtime(cache) < REFS_KEEP
     releases_error = ""
     if fresh and not recent:
         try:
-            loaded = parse_refs(mcota_net.fetch(REFS_URL, 30).decode(errors="replace"))
+            if repo == DEFAULT_SOURCE:
+                loaded = parse_refs(mcota_net.fetch(REFS_URL.format(repo=repo), 30).decode(errors="replace"))
+            else:
+                loaded = parse_refs(git(["ls-remote", "--tags", git_url(repo)], timeout=60))
             if not loaded:
                 raise ValueError("the answer contained no versions")
             tags = loaded
             os.makedirs(tools, exist_ok=True)
             with open(cache, "w") as fh:
-                json.dump({"tags": tags}, fh)
+                json.dump({"repo": repo, "tags": tags}, fh)
+        except RuntimeError as error:
+            releases_error = str(error)
         except Exception as error:
             releases_error = mcota_net.reason(error)
-    found = []
+    found = {}
     for name, sha in tags or []:
-        match = re.match(r"^" + kind + r"-(v\d+(?:\.\d+)*)$", name)
-        if match:
-            found.append((match.group(1), sha[:7]))
-    return sorted(found, key=lambda item: natural(item[0]))
+        match = re.match(r"^(" + kind + r"-)?(v\d+(?:\.\d+)*)$", name)
+        if match and (match.group(1) or match.group(2) not in found):
+            found[match.group(2)] = sha[:7]
+    for version in local_versions(home):
+        found[version] = LOCAL_PREFIX + version
+    return sorted(found.items(), key=lambda item: natural(item[0]))
 
 
 def releases_problem():
@@ -324,7 +443,7 @@ def board_file(source, board):
 
 def catalog(tools, commit):
     cache = os.path.join(tools, f"devices-{commit}.json")
-    if os.path.exists(cache):
+    if os.path.exists(cache) and not commit.startswith(LOCAL_PREFIX):
         with open(cache) as fh:
             found = json.load(fh)
         if all("scripts" in entry and (entry["ld"] or entry["mcu"] != "nrf52840") for entry in found.values()):
@@ -620,8 +739,11 @@ def load_settings(folder):
     for preset in data["presets"]:
         check_preset(preset)
     key = public_key(folder)
-    image = hashlib.sha256(json.dumps([key.hex() if key else "", [entry["public"] for entry in retired_keys(folder)],
-                                       [(p["name"], preset_commands(p)) for p in data["presets"]]]).encode()).hexdigest()[:16]
+    parts = [key.hex() if key else "", [entry["public"] for entry in retired_keys(folder)], [(p["name"], preset_commands(p)) for p in data["presets"]]]
+    custom = load_custom(folder)
+    if custom["source"] != DEFAULT_SOURCE or any(custom["flags"].values()) or local_digest(folder):
+        parts.append([custom["source"], sorted((name, " ".join(flags.split())) for name, flags in custom["flags"].items() if flags.strip()), local_digest(folder)])
+    image = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
     if image != data.get("digest"):
         data["revision"] = int(data.get("revision", 0)) + 1
         data["digest"] = image
@@ -698,7 +820,7 @@ def build_version(name, version, commit, folder, test=False, switch=False):
     source = fetch_source(commit, tools)
     work = os.path.join(tools, "build", f"{name}-{label}")
     shutil.rmtree(work, ignore_errors=True)
-    shutil.copytree(source, work)
+    shutil.copytree(source, work, ignore=shutil.ignore_patterns(".git", ".pio"))
     base = resources()
     with open(os.path.join(base, "firmware", "meshcore.patch"), encoding="utf-8") as fh:
         apply_patch(work, fh.read())
@@ -716,7 +838,7 @@ def build_version(name, version, commit, folder, test=False, switch=False):
     esp = target.get("kind") == "esp32"
     compiler = None if esp else pin_compiler(work, tools, switch)
     env = dict(os.environ)
-    env["PLATFORMIO_BUILD_FLAGS"] = "-DMCOTA_TAG='\"%s\"'" % label
+    env["PLATFORMIO_BUILD_FLAGS"] = "-DMCOTA_TAG='\"%s\"'" % label + " " + " ".join(load_custom(folder)["flags"].get(name, "").split())
     environment = target["env_test"] if test else target["env"]
     log = os.path.join(tools, f"build-{name}-{label}.log")
     if os.path.exists(log):

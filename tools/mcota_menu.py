@@ -394,6 +394,41 @@ def menu_update(home, config):
         raise SystemExit(0)
 
 
+def menu_custom(home, config):
+    while True:
+        head("Custom firmware")
+        data = mcota_build.load_custom(home)
+        console.print(f"Source: {data['source']}")
+        for version in mcota_build.local_versions(home):
+            console.print(f"Local source: {version}")
+        for device, flags in sorted(data["flags"].items()):
+            console.print(f"Flags for {device}: {flags}")
+        answer = ask("s to set the source, f to set build flags for a device, Enter to go back")
+        if not answer:
+            return
+        before = json.loads(json.dumps(data))
+        if answer == "s":
+            source = ask("Git URL, local path or GitHub repository as owner/name", data["source"])
+            data["source"] = mcota_build.DEFAULT_SOURCE if source == "default" else source
+        elif answer == "f":
+            device = ask("Device name as shown in the device list, for example Xiao_nrf52_repeater")
+            if not device:
+                continue
+            flags = ask("Build flags, for example -DENV_INCLUDE_BME280=1 (- removes them)", data["flags"].get(device, ""))
+            if flags.strip() and flags.strip() != "-":
+                data["flags"][device] = flags.strip()
+            else:
+                data["flags"].pop(device, None)
+        else:
+            continue
+        try:
+            mcota_build.save_custom(home, data)
+        except SystemExit as error:
+            mcota_build.save_custom(home, before)
+            console.print(Text(str(error), style=ORANGE))
+            pause()
+
+
 ENTRIES = [
     ("1", "Dashboard", menu_overview),
     ("2", "Release versions", menu_versions),
@@ -403,6 +438,7 @@ ENTRIES = [
     ("6", "Companion connection", menu_link),
     ("7", "Key", menu_key),
     ("8", "Update program", menu_update),
+    ("9", "Custom firmware", menu_custom),
 ]
 
 

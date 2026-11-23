@@ -854,7 +854,7 @@ def write_private(path, private):
 
 def cmd_init(args):
     home = os.path.abspath(args.dir)
-    for name in ("keys", "firmware", "packages", "install"):
+    for name in ("keys", "firmware", "packages", "install", "sources"):
         os.makedirs(folder(args, name), exist_ok=True)
     key_path = folder(args, "keys", "signing.key")
     if os.path.exists(key_path):
@@ -911,6 +911,36 @@ def import_key(home, path):
     write_private(key_path, new)
     pub = write_public(home, new)
     return [f"New key is active, ID {key_id(pub).hex()}."] + lines
+
+
+def cmd_custom(args):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import mcota_build
+    home = os.path.abspath(args.dir)
+    data = mcota_build.load_custom(home)
+    if args.source:
+        data["source"] = mcota_build.DEFAULT_SOURCE if args.source == "default" else args.source
+    changed = bool(args.source)
+    if args.define or args.undefine or args.clear:
+        if not args.device:
+            raise SystemExit("--define, --undefine and --clear need --device.")
+        flags = [] if args.clear else data["flags"].get(args.device, "").split()
+        for value in args.define:
+            flags = [f for f in flags if f.split("=")[0] != "-D" + value.split("=")[0]] + ["-D" + value]
+        for value in args.undefine:
+            flags = [f for f in flags if f != "-U" + value] + ["-U" + value]
+        if flags:
+            data["flags"][args.device] = " ".join(flags)
+        else:
+            data["flags"].pop(args.device, None)
+        changed = True
+    if changed:
+        mcota_build.save_custom(home, data)
+    print(f"Source:  {data['source']}")
+    for version in mcota_build.local_versions(home):
+        print(f"Local:   {version} ({os.path.join(home, mcota_build.LOCAL_SOURCES, version)})")
+    for device, flags in sorted(data["flags"].items()):
+        print(f"Flags:   {device}: {flags}")
 
 
 def cmd_version(args):
@@ -1264,6 +1294,13 @@ def main():
     p = sub.add_parser("keygen", help="create a new signing key")
     p.add_argument("file")
     p.set_defaults(func=cmd_keygen)
+    p = sub.add_parser("custom", help="show or set the firmware source and extra build flags")
+    p.add_argument("--source", help="git URL, local path or GitHub repository as owner/name. 'default' selects the official MeshCore repository")
+    p.add_argument("--device", help="device the build flags apply to, a name from 'devices'")
+    p.add_argument("--define", action="append", default=[], metavar="NAME[=VALUE]", help="add a define to the build of --device, for example ENV_INCLUDE_BME280=1. Can be given several times")
+    p.add_argument("--undefine", action="append", default=[], metavar="NAME", help="remove a define that the source sets for --device")
+    p.add_argument("--clear", action="store_true", help="remove all extra build flags of --device")
+    p.set_defaults(func=cmd_custom)
     p = sub.add_parser("version", help="show the program version")
     p.set_defaults(func=cmd_version)
     p = sub.add_parser("self-update", help="fetch a new version of the program from GitHub")
