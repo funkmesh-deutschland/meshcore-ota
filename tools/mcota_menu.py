@@ -106,7 +106,7 @@ def menu_versions(home, config):
         head("Release versions")
         known = mcota_build.releases(os.path.join(home, "cache"))
         if not known:
-            console.print(Text("The list of MeshCore versions could not be loaded. Is there an internet connection?", style=ORANGE))
+            console.print(Text(mcota_build.releases_problem(), style=ORANGE))
             pause()
             return
         allowed = set(mcota_build.allowed_versions(home) or [])
@@ -156,7 +156,7 @@ def menu_firmware(home, config):
     head("Build firmware")
     known = mcota_build.releases(os.path.join(home, "cache"))
     if not known:
-        console.print(Text("The list of MeshCore versions could not be loaded. Is there an internet connection?", style=ORANGE))
+        console.print(Text(mcota_build.releases_problem(), style=ORANGE))
         pause()
         return
     shown = known[-8:]

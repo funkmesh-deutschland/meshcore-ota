@@ -9,8 +9,10 @@ import struct
 import subprocess
 import sys
 import tarfile
-import urllib.request
+import time
 import zipfile
+
+import mcota_net
 
 SOURCE_URL = "https://github.com/meshcore-dev/MeshCore/archive/{commit}.tar.gz"
 PAGE = 4096
@@ -89,10 +91,9 @@ def fetch_source(commit, tools):
         return target
     say(f"Downloading the MeshCore source code, commit {commit} ...")
     try:
-        with urllib.request.urlopen(SOURCE_URL.format(commit=commit), timeout=120) as response:
-            data = response.read()
+        data = mcota_net.fetch(SOURCE_URL.format(commit=commit), 120)
     except Exception as error:
-        raise SystemExit(f"The MeshCore source code could not be downloaded ({error}). Is there an internet connection?")
+        raise SystemExit(f"The MeshCore source code could not be downloaded: {mcota_net.reason(error)}.")
     temp = target + ".part"
     shutil.rmtree(temp, ignore_errors=True)
     os.makedirs(temp)
@@ -237,35 +238,63 @@ def toolchain(pio_env):
     raise SystemExit("The compiler for the loader was not found.")
 
 
-TAGS_URL = "https://api.github.com/repos/meshcore-dev/MeshCore/tags?per_page=100"
+REFS_URL = "https://github.com/meshcore-dev/MeshCore.git/info/refs?service=git-upload-pack"
+REFS_KEEP = 3600
+releases_error = ""
 
 
 def natural(text):
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
 
 
-def releases(tools, kind="repeater", fresh=True):
-    cache = os.path.join(tools, "versions.json")
-    data = None
-    if fresh:
-        try:
-            request = urllib.request.Request(TAGS_URL, headers={"User-Agent": "meshcore-ota", "Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(request, timeout=30) as response:
-                data = json.loads(response.read().decode())
-            os.makedirs(tools, exist_ok=True)
-            with open(cache, "w") as fh:
-                json.dump(data, fh)
-        except Exception:
-            data = None
-    if data is None and os.path.exists(cache):
+def parse_refs(text):
+    tags = {}
+    for sha, name, peeled in re.findall(r"([0-9a-f]{40}) refs/tags/([^\s^\x00]+)(\^\{\})?", text):
+        if peeled or name not in tags:
+            tags[name] = sha
+    return sorted(tags.items())
+
+
+def cached_tags(cache):
+    if not os.path.exists(cache):
+        return None
+    try:
         with open(cache) as fh:
             data = json.load(fh)
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        return [tuple(item) for item in data.get("tags", [])]
+    return [(entry.get("name", ""), entry.get("commit", {}).get("sha", "")) for entry in data]
+
+
+def releases(tools, kind="repeater", fresh=True):
+    global releases_error
+    cache = os.path.join(tools, "versions.json")
+    tags = cached_tags(cache)
+    recent = tags is not None and time.time() - os.path.getmtime(cache) < REFS_KEEP
+    releases_error = ""
+    if fresh and not recent:
+        try:
+            loaded = parse_refs(mcota_net.fetch(REFS_URL, 30).decode(errors="replace"))
+            if not loaded:
+                raise ValueError("the answer contained no versions")
+            tags = loaded
+            os.makedirs(tools, exist_ok=True)
+            with open(cache, "w") as fh:
+                json.dump({"tags": tags}, fh)
+        except Exception as error:
+            releases_error = mcota_net.reason(error)
     found = []
-    for entry in data or []:
-        match = re.match(r"^" + kind + r"-(v\d+(?:\.\d+)*)$", entry.get("name", ""))
+    for name, sha in tags or []:
+        match = re.match(r"^" + kind + r"-(v\d+(?:\.\d+)*)$", name)
         if match:
-            found.append((match.group(1), entry["commit"]["sha"][:7]))
+            found.append((match.group(1), sha[:7]))
     return sorted(found, key=lambda item: natural(item[0]))
+
+
+def releases_problem():
+    return "The list of MeshCore versions could not be loaded: " + (releases_error or "no versions found") + "."
 
 
 LAYOUTS = {
