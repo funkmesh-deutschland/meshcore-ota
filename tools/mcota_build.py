@@ -132,6 +132,26 @@ def resources():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+FIRMWARE_PARTS = ("core/*.c", "core/*.h", "firmware/mcota/*", "firmware/esp32/*.py", "firmware/boards/*.ld", "firmware/meshcore.patch",
+                  "loader/nrf52/layout.h", "loader/nrf52/xflash.h")
+firmware_cache = []
+
+
+def firmware_digest():
+    if firmware_cache:
+        return firmware_cache[0]
+    base = resources()
+    state = hashlib.sha256()
+    for pattern in FIRMWARE_PARTS:
+        for path in sorted(glob.glob(os.path.join(base, *pattern.split("/")))):
+            if os.path.basename(path) == "mcota_config.h":
+                continue
+            with open(path, "rb") as fh:
+                state.update(os.path.basename(path).encode() + b"\0" + fh.read().replace(b"\r\n", b"\n") + b"\0")
+    firmware_cache.append(state.hexdigest()[:16])
+    return firmware_cache[0]
+
+
 def say(text):
     print(text, flush=True)
 
@@ -717,11 +737,16 @@ def settings_path(folder):
 
 
 def public_key(folder):
-    path = os.path.join(folder, "keys", "public.txt")
+    path = os.path.join(folder, "keys", "signing.key")
     if not os.path.exists(path):
         return None
-    match = re.search(r"Public key: ([0-9a-f]{64})", open(path, encoding="utf-8").read())
-    return bytes.fromhex(match.group(1)) if match else None
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    try:
+        private = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(open(path, "rb").read().strip().decode()))
+    except (ValueError, UnicodeDecodeError):
+        raise SystemExit(f"{path} is not a valid signing key.")
+    return private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
 def check_preset(preset):
@@ -759,6 +784,7 @@ def load_settings(folder):
     custom = load_custom(folder)
     if custom["source"] != DEFAULT_SOURCE or any(custom["flags"].values()) or local_digest(folder):
         parts.append([custom["source"], sorted((name, " ".join(flags.split())) for name, flags in custom["flags"].items() if flags.strip()), local_digest(folder)])
+    parts.append(firmware_digest())
     image = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
     if image != data.get("digest"):
         data["revision"] = int(data.get("revision", 0)) + 1
@@ -823,6 +849,8 @@ def build(archive, folder, test=False, switch=False):
 
 
 def build_version(name, version, commit, folder, test=False, switch=False):
+    if public_key(folder) is None:
+        raise SystemExit(f"There is no signing key in {os.path.join(folder, 'keys')}. Run 'meshcore-ota init' first.")
     target = find_target(name, folder, commit)
     label = stand_label(version, folder, test)
     tools = os.path.join(folder, "cache")

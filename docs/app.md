@@ -254,11 +254,14 @@ The firmware adds `ota` to the MeshCore command line. The commands work over USB
 | `ota preset`, `ota preset <name>` | show or select the preset, see [settings.md](settings.md) | USB and admin |
 | `ota locksettings`, `ota locksettings on`, `ota locksettings off` | lock of the settings | USB and admin |
 | `ota apply` | apply a complete update. Over the air with the update ID: `ota apply <id>` | USB and admin |
-| `ota drop` | discard the update | USB and admin |
+| `ota drop` | discard the update. Refused while an update is being applied (loader state `swap` or `trial`) | USB and admin |
+| `ota reset` | clear the loader status. After a rollback the repeater then accepts the same update again. Refused while a swap is in progress | USB and admin, during a trial boot USB only |
 | `ota hash <size>` | SHA-256 of the running firmware over this length | USB and admin |
 | `ota load ...` | load a package over USB (used by `meshcore-ota load`) | USB only |
 | `ota confirm` | confirm the trial boot by hand | USB only |
 | `ota ping`, `ota pong` | ping neighbours, query the reply | USB and admin |
+
+On nRF52840, the commands `ota key set`, `ota key clear`, `ota preset <name>`, `ota locksettings on`, `ota locksettings off`, `ota apply`, `ota drop`, `ota reset`, `ota load` and `ota confirm` reply with `ERR Bluetooth is active, try later` while Bluetooth is active on the repeater (for example after `start ota`).
 
 `ota info` replies, for example:
 
@@ -285,7 +288,8 @@ OK fw=v1.17.1+2 loading v1.18.0+2 40/93 w=40 old=0 id=0011223344556677 loader=id
 | `no-sharing` | the package does not fit into the store used for passing it on |
 | `ext` | the package store is in the external flash |
 | `direct` | ESP32: switch by changing the boot partition |
-| `FLASH-BLOCKED` | a write access was rejected |
+| `FLASH-BLOCKED` | a write access was rejected. Appears directly after `OK` |
+| `PAUSED` | nRF52840: Bluetooth is active, MeshCore-OTA rests until the next restart. Appears directly after `OK` |
 
 ## Limitations
 

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "../core/mcota_node.h"
+#include "../core/mcota_sha256.h"
 #include "ed_25519.h"
 
 #define NODES 8
@@ -512,6 +513,74 @@ int main(int argc, char **argv) {
     wait_complete(1, 4000);
     run(11u * 60u * 1000u);
     check(sims[1].node.state == MCOTA_NODE_COMPLETE && mcota_node_apply_due(&sims[0].node) && mcota_node_apply_due(&sims[1].node), "automatic apply does not happen");
+    pkg = keep;
+    manifest_len = keep_len;
+  }
+
+  {
+    size_t other_len;
+    uint8_t *other_pkg = load(dir, "auto.mcota", &other_len), *keep = pkg;
+    uint32_t keep_len = manifest_len;
+    compact = 0;
+    with_ext = 0;
+    loss_percent = 0;
+    corrupt_percent = 0;
+    for (k = 0; k < NODES; k++) setup(k, old_img, old_len, good, "sim_board", MAX_PAGES);
+    seed_all(0);
+    pkg = other_pkg;
+    manifest_len = (uint32_t)pkg[0] | ((uint32_t)pkg[1] << 8);
+    seed_all(2);
+    connect(0, 1);
+    for (k = 0; k < 900 && !(sims[1].node.has_manifest && sims[1].node.have > 0u); k++) run(1000u);
+    check(sims[1].node.state == MCOTA_NODE_FETCHING && sims[1].node.have < sims[1].node.manifest.pages
+          && memcmp(sims[1].node.campaign, sims[0].node.campaign, 8) == 0, "the node is not loading the first update");
+    link_up[0][1] = link_up[1][0] = 0;
+    connect(2, 1);
+    run(2u * 60u * 1000u);
+    check(memcmp(sims[1].node.campaign, sims[0].node.campaign, 8) == 0, "a loading node gives up its update at once");
+    run(20u * 60u * 1000u);
+    check(sims[1].node.has_manifest && memcmp(sims[1].node.campaign, sims[2].node.campaign, 8) == 0, "a stalled node does not take another update");
+    wait_complete(1, 400);
+    check(sims[1].node.state == MCOTA_NODE_COMPLETE, "the node does not finish the update it switched to");
+
+    for (k = 0; k < NODES; k++) setup(k, old_img, old_len, good, "sim_board", MAX_PAGES);
+    seed_all(2);
+    {
+      mcota_sha256_t h;
+      uint8_t ghost[96], digest[32];
+      uint32_t pages = sims[2].node.manifest.pages, mb = (pages + 7u) / 8u, i = 0, j;
+      ghost[i++] = 'L'; ghost[i++] = '2'; ghost[i++] = MCOTA_MSG_OFFER; ghost[i++] = 7;
+      ghost[i++] = 0x66; ghost[i++] = 0x66; ghost[i++] = 0x66; ghost[i++] = 0x66;
+      memcpy(ghost + i, sims[2].node.campaign, 8); ghost[i] ^= 0xFFu; i += 8u;
+      memcpy(ghost + i, sims[2].node.key_ids[0], 8); i += 8u;
+      mcota_sha256_init(&h);
+      mcota_sha256_update(&h, (const uint8_t *)"sim_board", 9);
+      mcota_sha256_final(&h, digest);
+      memcpy(ghost + i, digest, 4); i += 4u;
+      ghost[i++] = (uint8_t)sims[2].node.manifest.old_size; ghost[i++] = (uint8_t)(sims[2].node.manifest.old_size >> 8);
+      ghost[i++] = (uint8_t)(sims[2].node.manifest.old_size >> 16); ghost[i++] = (uint8_t)(sims[2].node.manifest.old_size >> 24);
+      memcpy(ghost + i, sims[2].node.manifest.old_hash, 8); i += 8u;
+      ghost[i++] = (uint8_t)pages; ghost[i++] = (uint8_t)(pages >> 8);
+      ghost[i++] = (uint8_t)manifest_len; ghost[i++] = (uint8_t)(manifest_len >> 8);
+      ghost[i++] = 0;
+      for (j = 0; j < mb; j++) ghost[i++] = 0xFFu;
+      mcota_node_receive(&sims[1].node, ghost, i);
+    }
+    check(sims[1].node.cand_active && !sims[1].node.has_manifest, "an offer for an unknown update does not make the node a candidate");
+    check(mcota_node_pending(&sims[1].node) && !mcota_node_pending(&sims[3].node), "pending work is not reported for a candidate only");
+    {
+      uint8_t query[16] = { 'L', '2', MCOTA_MSG_QUERY, 9, 0x55, 0x55, 0x55, 0x55 };
+      memcpy(query + 8, sims[3].node.key_ids[0], 8);
+      sims[3].node.cfg.image_size = (uint32_t)old_len;
+      mcota_node_receive(&sims[3].node, query, sizeof(query));
+      check(mcota_node_pending(&sims[3].node), "a waiting hello is not reported as pending work");
+      run(10u * 1000u);
+      check(!mcota_node_pending(&sims[3].node), "pending work stays reported after the hello");
+    }
+    run(60u * 1000u);
+    connect(2, 1);
+    run(3u * 60u * 1000u);
+    check(sims[1].node.has_manifest && memcmp(sims[1].node.campaign, sims[2].node.campaign, 8) == 0, "an unanswered offer blocks a real one");
     pkg = keep;
     manifest_len = keep_len;
   }

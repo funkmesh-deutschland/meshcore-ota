@@ -11,6 +11,7 @@ MSG_OFFER, MSG_REQUEST, MSG_DATA, MSG_PING, MSG_PONG, MSG_SEEK, MSG_QUERY, MSG_H
 PEER_LIMIT = 16
 REPAIR_LIMIT = 16
 ROUTE_TRIES = 3
+KEY_GAP = 45.0
 
 
 def lora_airtime_ms(length, sf, bw_hz, cr, preamble=16):
@@ -64,6 +65,8 @@ class Finder:
         self.sent_ms = 0.0
         self.seen = {}
         self.routes = {}
+        self.pongs = []
+        self.asked_at = now()
 
     def route(self, target, path, hop_size):
         target, path = bytes(target[:4]), bytes(path)
@@ -80,6 +83,10 @@ class Finder:
         return True
 
     def receive(self, payload, snr=None, rssi=None):
+        if len(payload) >= HEADER + 8 and payload[:2] == MAGIC and payload[2] == MSG_PING:
+            if len(self.pongs) < PEER_LIMIT:
+                self.pongs.append(payload[HEADER:HEADER + 4] + self.self_id + payload[HEADER + 4:HEADER + 8])
+            return None
         if len(payload) < HEADER + 28 or payload[:2] != MAGIC or payload[2] != MSG_HELLO:
             return None
         body = payload[HEADER:]
@@ -87,49 +94,66 @@ class Finder:
             return None
         key = body[0:4].hex()
         route = self.routes.get(key)
-        hello = {"id": key, "board": body[12:16], "size": struct.unpack("<I", body[16:20])[0], "hash": body[20:28],
-                 "tag": body[28:].decode(errors="replace"), "rssi": None if route else rssi, "snr": None if route else snr, "at": self.now(),
-                 "route": route, "hops": route["hops"] if route else 0}
+        tag, _, extra = body[28:].partition(b"\0")
+        hello = {"id": key, "key": body[4:12], "board": body[12:16], "size": struct.unpack("<I", body[16:20])[0], "hash": body[20:28],
+                 "tag": tag.decode(errors="replace"), "rssi": None if route else rssi, "snr": None if route else snr, "at": self.now(),
+                 "route": route, "hops": route["hops"] if route else 0,
+                 "node": extra[0] if len(extra) >= 6 else None, "loader": extra[1] if len(extra) >= 6 else None, "job": extra[2:6] if len(extra) >= 6 else b""}
         if route:
             route["tries"] = 0
             route["interval"] = self.most
             route["ask_at"] = self.now() + self.most
-        fresh = key not in self.seen or self.seen[key]["hash"] != hello["hash"] or self.seen[key]["hops"] != hello["hops"]
+        fresh = key not in self.seen or any(self.seen[key].get(field) != hello[field] for field in ("hash", "hops", "node", "loader"))
         self.seen[key] = hello
         return hello if fresh else None
-
-    def _key(self):
-        self.key_turn += 1
-        return self.key_ids[self.key_turn % len(self.key_ids)]
 
     def _take(self, packet, hops):
         cost = self.airtime_ms(len(packet) + 2 + hops * 3) * (hops + 1)
         if not self.budget.take(cost):
             return False
+        if packet[2] == MSG_QUERY:
+            self.asked_at = self.now()
         self.sequence += 1
         self.sent += 1
         self.sent_ms += cost
         return True
 
+    def quiet(self):
+        return self.now() - self.asked_at
+
     def poll(self):
         now = self.now()
+        if self.pongs:
+            packet = MAGIC + bytes([MSG_PONG, self.sequence & 0xFF]) + self.pongs[0]
+            if not self._take(packet, 0):
+                return None
+            self.pongs.pop(0)
+            return packet, b"", 1
         for route in sorted(self.routes.values(), key=lambda r: r["ask_at"]):
             if now < route["ask_at"]:
                 break
             back = b"".join(reversed([route["path"][i:i + route["hop_size"]] for i in range(0, len(route["path"]), route["hop_size"])]))
-            packet = (MAGIC + bytes([MSG_QUERY, self.sequence & 0xFF]) + self.self_id + self._key()
+            packet = (MAGIC + bytes([MSG_QUERY, self.sequence & 0xFF]) + self.self_id + self.key_ids[route.get("turn", 0) % len(self.key_ids)]
                       + route["target"] + bytes([route["hop_size"], route["hops"]]) + back)
             if not self._take(packet, route["hops"]):
                 return None
+            route["turn"] = (route.get("turn", 0) + 1) % len(self.key_ids)
+            if route["turn"]:
+                route["ask_at"] = now + KEY_GAP
+                return packet, route["path"], route["hop_size"]
             route["tries"] += 1
             route["interval"] = min(self.most, route["interval"] * 2)
             route["ask_at"] = now + route["interval"] * (0.5 + 0.5 * self.rng()) if route["tries"] < ROUTE_TRIES else math.inf
             return packet, route["path"], route["hop_size"]
         if now < self.ask_at:
             return None
-        packet = MAGIC + bytes([MSG_QUERY, self.sequence & 0xFF]) + self.self_id + self._key()
+        packet = MAGIC + bytes([MSG_QUERY, self.sequence & 0xFF]) + self.self_id + self.key_ids[self.key_turn % len(self.key_ids)]
         if not self._take(packet, 0):
             return None
+        self.key_turn = (self.key_turn + 1) % len(self.key_ids)
+        if self.key_turn:
+            self.ask_at = now + KEY_GAP
+            return packet, b"", 1
         self.interval = min(self.most, self.interval * 2)
         self.ask_at = now + self.interval * (0.5 + 0.5 * self.rng())
         return packet, b"", 1
@@ -184,6 +208,7 @@ class Provider:
         self.offer_at = now() + (2.0 if self.hops else offer_min * (0.5 + 0.5 * rng()))
         self.repairs = []
         self.wants = {}
+        self.answer_pings = True
         self.pongs = []
         self.sent = 0
         self.sent_ms = 0.0
@@ -226,7 +251,7 @@ class Provider:
             return
         self.received += 1
         kind, body = payload[2], payload[HEADER:]
-        if kind == MSG_PING and len(body) >= 8:
+        if kind == MSG_PING and len(body) >= 8 and self.answer_pings:
             self.pongs.append(body[0:4] + self.self_id + body[4:8])
         elif kind == MSG_SEEK and len(body) >= 12 and body[4:12] == self.campaign and not self.hops:
             self.seeks += 1
@@ -279,6 +304,8 @@ class Provider:
     def _next_packet(self):
         if self.pongs:
             return self._packet(MSG_PONG, self.pongs[0]), ("pong",)
+        if self.now() >= self.offer_at:
+            return self._packet(MSG_OFFER, self.offer_body), ("offer",)
         if not self.repairs:
             page = self._next_page()
             if page is not None and len(self.blocks[page]) > CHUNK:
@@ -297,8 +324,6 @@ class Provider:
             chunk = (mask & -mask).bit_length() - 1
             item = self._item(kind, index)
             return self._data(kind, index, chunk, item[chunk * CHUNK:(chunk + 1) * CHUNK]), ("chunk",)
-        if self.now() >= self.offer_at:
-            return self._packet(MSG_OFFER, self.offer_body), ("offer",)
         return None, None
 
     def busy(self):

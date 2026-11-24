@@ -110,6 +110,10 @@ If the old firmware is running again after a recorded switch because the Espress
 
 The file in `firmware/` is the same as `...-mcota.bin`. The repeater reports the size and checksum of exactly this image, which is how the program identifies the build.
 
+### Power saving
+
+With `powersaving` switched on, an ESP32 repeater sleeps between radio packets. MeshCore-OTA keeps it awake while a hello is waiting to be sent, while a manifest is being requested, while unchanged pages are being copied, during a trial boot and before a restart. A transfer itself does not keep the repeater awake: incoming packets wake it, and its own requests are sent at the next wake-up, at most 30 seconds late.
+
 ### Limitations on ESP32
 
 - The prediction of shifted addresses exists for ARM (nRF52840) and Xtensa (ESP32, ESP32-S3). For other instruction sets such as RISC-V (ESP32-C3, ESP32-C6) the program creates the patch without it, and updates are larger there.

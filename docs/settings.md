@@ -67,7 +67,7 @@ The commands work over USB and through admin access over the air. The reply to `
 OK active=standard state=applied lock=off errors=0 list=standard,dense
 ```
 
-On nRF52840, preset and lock cannot be changed while Bluetooth is active on the repeater (for example after `start ota`). The repeater then replies with `ERR Bluetooth is active, try later`.
+On nRF52840, preset and lock cannot be changed while Bluetooth is active on the repeater (for example after `start ota`). The repeater then replies with `ERR Bluetooth is active, try later`. The same applies to all other `ota` commands that write, see [app.md](app.md).
 
 ## When values are overwritten
 
@@ -85,7 +85,7 @@ If a MeshCore version does not know a setting, the repeater counts that as an er
 
 ## How changes are sent out
 
-Every change to a preset or to the key results in a new revision. It follows the version in the name of the firmware, for example `v1.18.0+4`. The dashboard builds the running version with the new revision and sends the difference to the previous firmware. The update is small because essentially only the table of presets changes.
+Every change to a preset or to the key results in a new revision. The same happens when a new version of the program brings changes to the MeshCore-OTA part of the firmware, so that fixes there reach repeaters that are already installed. It follows the version in the name of the firmware, for example `v1.18.0+4`. The dashboard builds the running version with the new revision and sends the difference to the previous firmware. The update is small because essentially only the table of presets changes.
 
 For a new revision the same applies: the repeater only receives it once it is running the latest released version. If it is one version behind, it receives the next version together with the current revision.
 

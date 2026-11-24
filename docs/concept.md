@@ -135,7 +135,7 @@ Devices without external flash rebuild the new firmware in place, see [devices.m
 
 In the internal flash the firmware writes only to the status area, to the page with keys and preset selection and, on devices without external flash, to the free area behind the running firmware. The loader writes only from slot A to the end of the status area. The bootloader of the device and the SoftDevice are outside of that. Recovery through the double reset therefore remains available.
 
-As long as the SoftDevice is active (Bluetooth, for example after `start ota`), the firmware does not write to the internal flash.
+As long as the SoftDevice is active (Bluetooth, for example after `start ota`), the firmware does not write to the internal flash. MeshCore-OTA pauses for that time: it ignores its radio packets, refuses commands that write, and `ota info` shows `PAUSED`. Bluetooth stays active until the next restart.
 
 ### What the loader cannot do
 
@@ -159,7 +159,7 @@ A repeater without a reachable neighbour therefore does not confirm an update an
 ## Limitations
 
 - **Devices without external flash** may be able to apply a large update only without a rollback copy.
-- **One update at a time.** As long as a repeater is loading an update, it does not accept another one. If it is stuck, `ota drop` helps.
+- **One update at a time.** As long as a repeater is loading an update, it does not accept another one. If no usable data arrives for eight waiting periods (about 85 minutes at 0.5 % airtime), it accepts another offer. `ota drop` discards the update at once.
 - **Source firmware.** An update can only be built for repeaters whose running firmware is present as a file in the data directory.
 - **Jammers in radio range** can stall a transfer but cannot inject anything false.
 - **Maintenance.** The project builds on MeshCore. The addition in `firmware/meshcore.patch` has to apply to every new MeshCore version, otherwise the build aborts with a message.

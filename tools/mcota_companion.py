@@ -31,6 +31,7 @@ PUSH_NEW_ADVERT = 0x8A
 PUSH_PATH_DISCOVERY = 0x8D
 DISCOVER_GAP = 90.0
 DISCOVER_AGAIN = 3600.0
+BUSY_QUERY_GAPS = 10
 MAX_HOPS = 2
 WIDE_HOPS_VERSION = 14
 TYPE_REPEATER = 2
@@ -307,10 +308,12 @@ async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=
     def provider_for(manifest, blocks, route=None):
         extra = {"target": route["target"], "hops": [route["path"][i:i + route["hop_size"]] for i in range(0, len(route["path"]), route["hop_size"])],
                  "hop_size": route["hop_size"]} if route else {}
-        return Provider(manifest, blocks, companion.public_key[:4], airtime, budget_ppm=budget_ppm, offer_min=offer_min, offer_max=offer_max, budget=budget, **extra)
+        provider = Provider(manifest, blocks, companion.public_key[:4], airtime, budget_ppm=budget_ppm, offer_min=offer_min, offer_max=offer_max, budget=budget, **extra)
+        provider.answer_pings = finder is None
+        return provider
 
-    providers = [provider_for(manifest, blocks) for manifest, blocks in packages]
     finder = Finder(companion.public_key[:4], key_id, airtime, budget, least=offer_min / 2, most=offer_max) if key_id else None
+    providers = [provider_for(manifest, blocks) for manifest, blocks in packages]
     companion.finder = finder
     companion.states = {}
     pending = []
@@ -396,9 +399,25 @@ async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=
                     elif all(p.manifest != manifest or p.target for p in providers):
                         providers.append(provider_for(manifest, blocks))
                         providers[-1].offer_at = time.monotonic() + 1.0
+                    else:
+                        for known in providers:
+                            if known.manifest == manifest and not known.target:
+                                known.offer_at = min(known.offer_at, time.monotonic() + 1.0)
                     report(companion, providers, False, f"{name}: {text}")
             sent = False
-            for step in range(len(providers)):
+            if finder and finder.pongs:
+                answer = finder.poll()
+                if answer is not None:
+                    if not await companion.send_raw(*answer):
+                        report(companion, providers, False, f"Companion: {companion.last_error}")
+                    sent = True
+            if not sent and finder and any(p.busy() for p in providers) and finder.quiet() >= offer_min * BUSY_QUERY_GAPS:
+                asked = finder.poll()
+                if asked is not None:
+                    if not await companion.send_raw(*asked):
+                        report(companion, providers, False, f"Companion: {companion.last_error}")
+                    sent = True
+            for step in range(0 if sent else len(providers)):
                 provider = providers[(turn + step) % len(providers)]
                 packet = provider.poll()
                 if packet is None:
