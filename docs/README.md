@@ -1,11 +1,12 @@
 # Documentation
 
-MeshCore-OTA delivers firmware updates to MeshCore repeaters over LoRa. A step-by-step guide to getting started is in the project [README](../README.md).
+MeshCore-OTA delivers firmware updates to MeshCore repeaters over LoRa. The short way from the download to the first update is in [quickstart.md](quickstart.md), the detailed guide in the project [README](../README.md).
 
 ## For operators
 
 | File | Contents |
 | --- | --- |
+| [quickstart.md](quickstart.md) | seven steps from the download to the first update over the air |
 | [app.md](app.md) | the program `meshcore-ota`: menu, subcommands, options, data directory, commands on the repeater |
 | [keys.md](keys.md) | key pair, importing an existing key, key change |
 | [settings.md](settings.md) | settings and presets, lock on the repeater |

@@ -2,6 +2,8 @@
 
 Firmware updates for MeshCore repeaters over LoRa, signed with the operator's own key.
 
+> **Quickstart:** [from the download to the first update over the air in seven steps](docs/quickstart.md)
+
 A project of [Funkmesh Deutschland e. V.](https://funkmesh.de), open source under the GNU General Public License, version 3.
 
 ![Main menu of meshcore-ota](docs/images/menu.png)
@@ -243,6 +245,7 @@ The same tests run on GitHub on every push to `main` and on every pull request.
 | File | Contents |
 | --- | --- |
 | [docs/README.md](docs/README.md) | table of contents |
+| [docs/quickstart.md](docs/quickstart.md) | the short way from the download to the first update |
 | [docs/app.md](docs/app.md) | the program: menu, commands, options, data directory |
 | [docs/keys.md](docs/keys.md) | keys, import, key change |
 | [docs/settings.md](docs/settings.md) | settings and presets |
