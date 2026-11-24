@@ -29,7 +29,11 @@ extern "C" {
 #define PRESET_AFTER_MS 4000u
 #define TRIAL_MIN_MS 60000u
 #define TRIAL_MAX_MS 600000u
+#ifdef MCOTA_TEST
 #define PING_EVERY_MS 20000u
+#else
+#define PING_EVERY_MS 120000u
+#endif
 #define PROBE_EVERY_MS 60000u
 #define REPLY_MAX 160
 
@@ -219,6 +223,7 @@ void McotaService::begin(McotaHost *h, const uint8_t *self_pub_key) {
 #endif
   load_keys();
   start_node();
+  if (mcota_state(cfg.flash, &cfg.layout) == MCOTA_STATE_TRIAL && !mcota_node_runs_requested(&node) && mcota_clear(cfg.flash, &cfg.layout)) start_node();
   if (mcota_port_confirmed(&node)) start_node();
   started_at = millis();
   next_ping = started_at + 5000u;
@@ -246,7 +251,7 @@ void McotaService::loop() {
   }
 #endif
 
-  if (!reboot_at && mcota_node_apply_due(&node) && !mcota_port_blocked() && mcota_node_apply(&node)) reboot_at = now + 3000u;
+  if (!reboot_at && mcota_node_apply_due(&node) && !mcota_port_blocked() && mcota_node_apply(&node) && !mcota_port_blocked()) reboot_at = now + 3000u;
 
   if (mcota_state(cfg.flash, &cfg.layout) == MCOTA_STATE_TRIAL) {
     uint32_t up = now - started_at;
@@ -316,9 +321,21 @@ static const char *loader_name() {
 }
 
 bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
+  const char *prefix = NULL;
+  int room = REPLY_MAX;
+  while (*command == ' ') command++;
+  if (strlen(command) > 4 && command[2] == '|') {
+    prefix = command;
+    command += 3;
+  }
   if (memcmp(command, "ota", 3) != 0 || (command[3] != ' ' && command[3] != 0)) return false;
   const char *arg = command[3] ? command + 4 : "";
   char id[17];
+  if (prefix) {
+    memcpy(reply, prefix, 3);
+    reply += 3;
+    room -= 3;
+  }
 
   if (!ready) {
     strcpy(reply, "ERR not ready");
@@ -327,25 +344,25 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
     bool loading = node.cand_active || (node.has_manifest && node.state == MCOTA_NODE_FETCHING);
     hex(id, node.campaign, 8);
     if (node.provider_set && loading) hex(from, node.provider, 4);
-    snprintf(reply, REPLY_MAX, "OK fw=%s %s %s %u/%u w=%u old=%u id=%s loader=%s from=%s age=%us budget=%u.%u%% tx=%u rx=%u%s%s%s%s%s",
-             MCOTA_TAG, state_name(), node.has_manifest ? node.manifest.version : "-", (unsigned)node.have,
+    snprintf(reply, room, "OK%s fw=%s %s %s %u/%u w=%u old=%u id=%s loader=%s from=%s age=%us budget=%u.%u%% tx=%u rx=%u%s%s%s%s",
+             mcota_port_blocked() ? " FLASH-BLOCKED" : "", MCOTA_TAG, state_name(), node.has_manifest ? node.manifest.version : "-", (unsigned)node.have,
              node.has_manifest ? (unsigned)node.manifest.pages : 0u, (unsigned)node.serve_count, (unsigned)mcota_node_archives(&node), node.has_manifest ? id : "-", loader_name(),
              from, (unsigned)((millis() - node.useful_at) / 1000u),
              (unsigned)(MCOTA_BUDGET_PPM / 10000), (unsigned)(MCOTA_BUDGET_PPM % 10000 / 1000), (unsigned)node.tx_packets, (unsigned)node.rx_packets,
              node.has_manifest && (node.manifest.flags & MCOTA_MANIFEST_AUTO_APPLY) ? " auto" : "",
              mcota_node_no_rollback(&node) ? " no-rollback" : "", mcota_node_needs_command(&node) ? " awaiting-command" : "",
-             node.has_manifest && !node.can_serve ? " no-sharing" : cfg.direct ? " direct" : cfg.store ? " ext" : "", mcota_port_blocked() ? " FLASH-BLOCKED" : "");
+             node.has_manifest && !node.can_serve ? " no-sharing" : cfg.direct ? " direct" : cfg.store ? " ext" : "");
   } else if (strcmp(arg, "peers") == 0) {
-    int used = snprintf(reply, REPLY_MAX, "OK");
+    int used = snprintf(reply, room, "OK");
     bool any = false;
     for (uint32_t i = 0; i < MCOTA_PEERS; i++) {
       char peer[9];
-      if (!node.peers[i].used) continue;
+      if (!node.peers[i].used || used >= room - 1) continue;
       hex(peer, node.peers[i].id, 4);
-      used += snprintf(reply + used, REPLY_MAX - used, " %s:%u:%us", peer, (unsigned)mcota_node_peer_wants(&node, i), (unsigned)((millis() - node.peers[i].at) / 1000u));
+      used += snprintf(reply + used, room - used, " %s:%u:%us", peer, (unsigned)mcota_node_peer_wants(&node, i), (unsigned)((millis() - node.peers[i].at) / 1000u));
       any = true;
     }
-    if (!any) snprintf(reply + used, REPLY_MAX - used, " none");
+    if (!any) snprintf(reply + used, room - used, " none");
   } else if (strcmp(arg, "key") == 0) {
     char a[17] = "-", b[17] = "-";
     if (cfg.key_set[0]) hex(a, node.key_ids[0], 8);
@@ -408,13 +425,24 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
       strcpy(reply, "ERR over radio use the id: ota apply <id>");
     } else if (!mcota_node_apply(&node)) {
       strcpy(reply, "ERR no complete update");
+    } else if (mcota_port_blocked()) {
+      strcpy(reply, "ERR flash blocked");
     } else {
       reboot_at = millis() + 3000u;
       strcpy(reply, "OK reboot in 3 s");
     }
   } else if (strcmp(arg, "drop") == 0) {
-    mcota_node_drop(&node);
-    strcpy(reply, "OK");
+    mcota_state_t state = mcota_state(cfg.flash, &cfg.layout);
+    if (state == MCOTA_STATE_ARMED || state == MCOTA_STATE_TRIAL) {
+      strcpy(reply, "ERR update is being applied");
+    } else {
+      mcota_node_drop(&node);
+      strcpy(reply, mcota_port_blocked() ? "ERR flash blocked" : "OK");
+    }
+  } else if (strcmp(arg, "reset") == 0) {
+    if (!usb && mcota_state(cfg.flash, &cfg.layout) == MCOTA_STATE_TRIAL) strcpy(reply, "ERR during a trial boot USB only");
+    else if (!mcota_clear(cfg.flash, &cfg.layout)) strcpy(reply, mcota_port_blocked() ? "ERR flash blocked" : "ERR swap in progress");
+    else { start_node(); strcpy(reply, "OK"); }
   } else if (strcmp(arg, "confirm") == 0) {
     if (!usb) strcpy(reply, "ERR USB only");
     else { confirm(); sprintf(reply, "OK loader=%s", loader_name()); }
@@ -423,7 +451,8 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
     uint32_t addr = (uint32_t)strtoul(arg + 5, NULL, 16) & ~3u;
     uint8_t data[24];
     char text[49];
-    if (!mcota_port_peek(addr, data)) strcpy(reply, "ERR address");
+    if (!usb) strcpy(reply, "ERR USB only");
+    else if (!mcota_port_peek(addr, data)) strcpy(reply, "ERR address");
     else { hex(text, data, 24); sprintf(reply, "OK %05x %s", (unsigned)addr, text); }
 #endif
   } else if (strcmp(arg, "ping") == 0) {
@@ -436,9 +465,9 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
     strcpy(reply, node.pong_seen ? "OK reply from MeshCore-OTA neighbour" : neighbour_seen ? "OK reply from repeater" : "OK no reply");
   } else if (strcmp(arg, "preset") == 0) {
 #if MCOTA_PRESET_COUNT > 0
-    int used = snprintf(reply, REPLY_MAX, "OK active=%s state=%s lock=%s errors=%u list=", preset_names[preset_active()],
+    int used = snprintf(reply, room, "OK active=%s state=%s lock=%s errors=%u list=", preset_names[preset_active()],
                         preset_applied == preset_hash(preset_active()) ? "applied" : "pending", settings_locked ? "on" : "off", (unsigned)preset_failed);
-    for (uint32_t i = 0; i < MCOTA_PRESET_COUNT && used < (int)REPLY_MAX; i++) used += snprintf(reply + used, REPLY_MAX - used, "%s%s", i ? "," : "", preset_names[i]);
+    for (uint32_t i = 0; i < MCOTA_PRESET_COUNT && used < room; i++) used += snprintf(reply + used, room - used, "%s%s", i ? "," : "", preset_names[i]);
 #else
     strcpy(reply, "OK no presets in this firmware");
 #endif
@@ -451,7 +480,7 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
       strcpy(reply, "ERR Bluetooth is active, try later");
     } else {
       preset_apply((uint32_t)found);
-      snprintf(reply, REPLY_MAX, "OK %s applied, %u errors", preset_names[found], (unsigned)preset_failed);
+      snprintf(reply, room, "OK %s applied, %u errors", preset_names[found], (unsigned)preset_failed);
     }
 #else
     strcpy(reply, "ERR no presets in this firmware");
@@ -467,7 +496,7 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
       strcpy(reply, mcota_port_blocked() ? "ERR flash blocked" : settings_locked ? "OK on" : "OK off");
     }
   } else {
-    strcpy(reply, "ERR ota info|peers|key|preset|locksettings|hash|load|apply|drop|confirm|ping|pong");
+    strcpy(reply, "ERR ota info|peers|key|preset|locksettings|hash|load|apply|drop|reset|confirm|ping|pong");
   }
   return true;
 }

@@ -1247,6 +1247,14 @@ static bool send_hello(mcota_node_t *n) {
   put32(p + i, n->cfg.image_size); i += 4u;
   copy(p + i, running_hash(n, n->cfg.image_size), 8u); i += 8u;
   for (k = 0; k < 15u && n->cfg.tag[k]; k++) p[i++] = (uint8_t)n->cfg.tag[k];
+  p[i++] = 0u;
+  p[i++] = (uint8_t)(n->cand_active ? MCOTA_NODE_FETCHING : n->state);
+  p[i++] = (uint8_t)mcota_state(n->cfg.flash, &n->cfg.layout);
+  {
+    mcota_request_t job;
+    bool known = mcota_request_read(n->cfg.flash, &n->cfg.layout, &job);
+    for (k = 0; k < 4u; k++) p[i++] = known ? job.new_hash[k] : 0u;
+  }
   return transmit(n, p, i, n->hello_routed ? &n->hello_route : 0);
 }
 

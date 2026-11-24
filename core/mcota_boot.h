@@ -83,6 +83,7 @@ uint32_t mcota_trials(const mcota_flash_t *flash, const mcota_layout_t *layout);
 bool mcota_request(const mcota_flash_t *flash, const mcota_layout_t *layout, const mcota_request_t *request);
 bool mcota_request_read(const mcota_flash_t *flash, const mcota_layout_t *layout, mcota_request_t *out);
 void mcota_confirm(const mcota_flash_t *flash, const mcota_layout_t *layout);
+bool mcota_clear(const mcota_flash_t *flash, const mcota_layout_t *layout);
 void mcota_hash_region(const mcota_flash_t *flash, uint32_t addr, uint32_t len, uint8_t out[32]);
 
 #endif

@@ -1030,14 +1030,14 @@ def next_step(args, board, running, known):
     return target, mcota_build.stand_label(target, home, args.test)
 
 
-def package_for(args, board, old_label, new_label, build):
+def package_for(args, board, old_label, new_label, build, key=None):
     import mcota_build
     home = os.path.abspath(args.dir)
     old_path = mcota_build.firmware_file(home, board, old_label)
     new_path = mcota_build.firmware_file(home, board, new_label)
     target = folder(args, "packages", f"{board}-{old_label}__{new_label}.mcota")
     wanted = bytes([FORMAT, (0 if args.manual_apply else 1) | 2 | (8 if args.no_rollback else 0)])
-    private = private_for(home, mcota_build.key_index(home).get(f"{board}-{old_label}", ""))
+    private = private_for(home, key or mcota_build.key_index(home).get(f"{board}-{old_label}", ""))
     if os.path.exists(target) and os.path.getmtime(target) >= max(os.path.getmtime(old_path), os.path.getmtime(new_path)) and open(target, "rb").read(8)[6:8] == wanted:
         manifest, blocks = read_package(target)
         if manifest[116:124] == key_id(public_bytes(private)):
@@ -1107,6 +1107,9 @@ def cmd_build(args):
         build_downloads(args)
 
 
+LOADER_ARMED, LOADER_TRIAL, LOADER_REVERTED, LOADER_REJECTED = 1, 2, 4, 5
+
+
 def make_resolver(args, old_versions):
     import threading
     import mcota_build
@@ -1130,6 +1133,10 @@ def make_resolver(args, old_versions):
             if running is None:
                 return (f"runs {hello['tag'] or 'unknown firmware'}, which was not built here. Without the base firmware no update can be built. "
                         f"The repeater needs the base firmware once (menu: Build firmware)")
+            if hello.get("loader") == LOADER_TRIAL:
+                return f"runs {running} on trial and waits for confirmation. Keep this program running"
+            if hello.get("loader") == LOADER_ARMED:
+                return f"is applying an update (runs {running})"
             known = mcota_build.releases(tools, fresh=not args.offline)
             version, label = next_step(args, board, running, known)
             if label == running:
@@ -1141,8 +1148,13 @@ def make_resolver(args, old_versions):
                     return f"should get {label}, but the source commit of {version} is not known. Is there an internet connection?"
                 states[hello["id"]] = f"building {label}"
                 mcota_build.build_version(target_name, version, commit, home, args.test, args.switch_compiler)
+            if hello.get("loader") in (LOADER_REVERTED, LOADER_REJECTED):
+                target = hashlib.sha256(open(mcota_build.firmware_file(home, board, label), "rb").read()).digest()[:4]
+                if hello.get("job") == target:
+                    reason = "rolled back from" if hello["loader"] == LOADER_REVERTED else "rejected"
+                    return f"{reason} {label} (runs {running}). Send 'ota reset' to the repeater to try again"
             states[hello["id"]] = f"building the package {running} to {label}"
-            manifest, blocks = package_for(args, board, running, label, len(files) + 1)
+            manifest, blocks = package_for(args, board, running, label, len(files) + 1, hello["key"].hex() if hello.get("key") else None)
             old_versions[hashlib.sha256(manifest).digest()[:8]] = running
             return manifest, blocks, f"gets {label} (runs {running})"
 

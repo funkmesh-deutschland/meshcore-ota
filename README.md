@@ -114,6 +114,10 @@ The dashboard asks over the air which of your repeaters are present. Each one re
 
 As soon as a repeater has an update completely, it passes it on to its neighbours by itself. It applies the update on its own once no neighbour has loaded from it for half an hour, plus a random delay of up to another half hour.
 
+After applying, the new firmware runs on trial until a neighbouring repeater or the dashboard answers it. Without an answer it restarts after ten minutes, and after three attempts the previous firmware runs again. Leave the dashboard running until the repeater shows the new build as confirmed. A repeater that has rolled back does not take the same update again until it receives `ota reset`.
+
+At 0.5 % airtime a version step takes several hours per repeater, about nine hours at SF8, 62.5 kHz and CR 4/8. A higher airtime for the companion (menu item 6, up to 5 %) shortens the transfer from the computer.
+
 Under menu item 5 (My repeaters) you add repeaters from the companion's contacts. For these the program discovers the route itself if they do not respond.
 
 ## Folders and files

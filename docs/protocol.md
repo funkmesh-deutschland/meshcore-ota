@@ -101,8 +101,12 @@ A repeater that trusts this key replies with a hello, to a query without a route
 | 4 | size of the running firmware |
 | 8 | beginning of the SHA-256 of the running firmware |
 | up to 15 | name of the build as text |
+| 1 | zero byte, ends the name |
+| 1 | state of the update: 0 idle, 1 loading, 2 ready, 3 applied, 4 failed |
+| 1 | state of the loader: 0 idle, 1 swap, 2 trial, 3 confirmed, 4 rollback, 5 rejected |
+| 4 | beginning of the SHA-256 of the firmware the last job installed, zero without a job |
 
-From this the computer recognises which firmware is running and which package fits.
+From this the computer recognises which firmware is running and which package fits. It does not offer an update again that the repeater has rolled back or rejected, and it shows a running trial boot.
 
 ## Sequence at the receiver
 
