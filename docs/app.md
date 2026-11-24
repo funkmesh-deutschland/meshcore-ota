@@ -123,10 +123,21 @@ bluetoothctl
 | Panel | Contents |
 | --- | --- |
 | Companion | name, ID, radio parameters, transmit power and firmware of the companion |
-| Airtime | the configured limit, the actual share since start, and the saved-up airtime credit of at most 10 seconds |
+| Airtime | the configured limit, the actual share since start, the saved-up airtime credit of at most 10 seconds, and the time until the next packet goes out |
 | Offered updates | per package: device type, source build, target build, changed pages, number of radio packets, apply mode |
 | Repeaters | repeaters that have responded, with build, progress, signal or number of hops and time since the last request |
 | Log | the latest events |
+
+For a repeater that is loading, the status shows the progress packet by packet:
+
+| Line | Meaning |
+| --- | --- |
+| `51 of 110 packets sent (46 %), 59 to go` | radio packets of this update that are sent and that are still waiting. The bar below follows this count |
+| `page 74 of 90: packet 5 of 8 sent` | the page in progress. A page whose difference does not fit into one packet is split into several. Small pages share a packet, the line then counts the pages sent |
+| `next packet in 3:53 min, about 4 h 58 min left` | time until the airtime credit allows the next packet, and the time for the remaining packets at the configured airtime |
+| `waiting for the repeater` | everything requested is sent. The repeater checks what it has and requests what is missing |
+
+The packet count rises again when a repeater reports packets as lost. The remaining time covers sending only. Checking, applying and the trial boot on the repeater come on top.
 
 What the dashboard does:
 

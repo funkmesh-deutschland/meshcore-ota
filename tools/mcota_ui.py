@@ -68,7 +68,7 @@ def panel(body, title):
     return Panel(body, title=f"[bold {TEAL}]{title}[/]", title_align="left", border_style=RAIL, box=box.ROUNDED, padding=(0, 1), style=BASE)
 
 
-def bar(done, total, width=28, color=TEAL):
+def bar(done, total, width=None, color=TEAL):
     return ProgressBar(total=max(total, 1), completed=min(done, total), width=width, complete_style=color, finished_style=TEAL, style=RAIL)
 
 
@@ -79,6 +79,13 @@ def age(seconds):
     if seconds < 5400:
         return f"{seconds // 60} min ago"
     return f"{seconds // 3600} h ago"
+
+
+def span(seconds):
+    seconds = int(seconds + 0.5)
+    if seconds < 3600:
+        return f"{seconds // 60}:{seconds % 60:02d} min"
+    return f"{seconds // 3600} h {seconds % 3600 // 60:02d} min"
 
 
 def version_of(manifest):
@@ -125,6 +132,17 @@ class Dashboard:
         left = len(provider.wants.get(bytes.fromhex(key), ()))
         left += sum(1 for entry in provider.repairs if entry[0] == 1)
         return "pages", changed - min(left, changed), changed
+
+    def packets(self, provider, key):
+        total = provider.packets_total()
+        left = min(total, provider.packets_left(bytes.fromhex(key)))
+        return total - left, total, left
+
+    def next_packet(self, provider):
+        wait = provider.next_in()
+        if wait is None and not provider.busy():
+            return None
+        return "next packet now" if wait is None or wait < 1.0 else f"next packet in {span(wait)}"
 
     def track(self):
         for key, (provider, peer) in self.current().items():
@@ -179,6 +197,13 @@ class Dashboard:
             grid.add_row("Budget", Text(f"{budget.ms / 1000:.1f} s saved of at most 10 s", style=DARK))
             grid.add_row("", bar(budget.ms, 10000.0, 30))
             grid.add_row("Sent", f"{sent} packets · {sent_ms / 1000:.0f} s airtime")
+            waits = [p.next_in() for p in self.providers if p.next_in() is not None]
+            if waits:
+                grid.add_row("Next packet", Text("now" if min(waits) < 1.0 else f"in {span(min(waits))}", style=TEAL))
+            elif any(p.busy() for p in self.providers):
+                grid.add_row("Next packet", Text("now", style=TEAL))
+            else:
+                grid.add_row("Next packet", Text("nothing waiting", style=DARK))
             grid.add_row("Requests", f"{sum(p.requests for p in self.providers)} from repeaters")
         minutes = int((time.monotonic() - self.started) // 60)
         grid.add_row("Running", f"{minutes // 60} h {minutes % 60:02d} min")
@@ -193,13 +218,13 @@ class Dashboard:
         for provider in self.providers:
             m = provider.manifest
             changed = sum(1 for block in provider.blocks if block)
-            packets = (len(m) + CHUNK - 1) // CHUNK + sum((len(b) + CHUNK - 1) // CHUNK for b in provider.blocks if len(b) > CHUNK) + (sum(len(b) for b in provider.blocks if 0 < len(b) <= CHUNK) + CHUNK - 1) // CHUNK
-            grid.add_row(board_of(m), getattr(provider, "old_version", "") or m[84:88].hex(), version_of(m), f"{changed} changed pages, {provider.pages - changed} stay the same", f"about {packets}",
+            packets = (len(m) + CHUNK - 1) // CHUNK + provider.packets_total()
+            grid.add_row(board_of(m), getattr(provider, "old_version", "") or m[84:88].hex(), version_of(m), f"{changed} changed pages, {provider.pages - changed} stay the same", str(packets),
                          Text("automatic", style=TEAL) if m[5] & 1 else Text("on command", style=ORANGE), str(loading.get(id(provider), 0) or ""))
         return panel(grid, "Offered updates")
 
     def peers_panel(self):
-        grid = table("Repeaters", [("Repeater", {"style": "bold"}), ("loading", {}), ("Status", {}), ("Progress", {"ratio": 1}),
+        grid = table("Repeaters", [("Repeater", {"style": "bold"}), ("loading", {}), ("Status", {"ratio": 1}),
                                   ("Signal", {"justify": "right"}), ("last request", {"justify": "right", "style": SOFT})])
         rows = 0
         loading = self.current()
@@ -211,20 +236,42 @@ class Dashboard:
             state = self.companion.states.get(key, "")
             rssi = hello.get("rssi")
             signal = Text(f"{hello['hops']} hops" if hello.get("hops", 0) > 1 else "1 hop", style=SOFT) if hello.get("hops") else (Text(f"{rssi} dBm", style=TEAL if rssi is not None and rssi > -100 else ORANGE) if rssi is not None else Text(""))
-            grid.add_row(label, hello["tag"] or "?", Text(state, style=TEAL if state.startswith("is up to date") else ORANGE), Text(""), signal, age(finder.now() - hello["at"]))
+            grid.add_row(label, hello["tag"] or "?", Text(state, style=TEAL if state.startswith("is up to date") else ORANGE), signal, age(finder.now() - hello["at"]))
             rows += 1
         for key, (provider, peer) in sorted(loading.items()):
             label = f"{self.name(key)} ({key})" if self.name(key) else key
             stage, done, total = self.progress(provider, key, peer)
+            upcoming = self.next_packet(provider)
+            detail = None
             if stage == "manifest":
-                status = Text(f"manifest, part {done} of {total}", style=ORANGE)
-            elif done >= total:
-                status = Text(f"all {total} changed pages sent" if total != 1 else "the one changed page sent", style=f"bold {TEAL}")
+                status = Text(f"manifest, packet {done} of {total} sent", style=ORANGE)
+                upcoming = Text(upcoming, style=TEAL) if upcoming else Text("waiting for the repeater", style=SOFT)
             else:
-                status = Text(f"{done} of {total} changed pages ({100 * done // max(total, 1)} %)")
+                sent, packets, left = self.packets(provider, key)
+                now = provider.current()
+                if left == 0:
+                    status = Text(f"all {packets} packets sent, {total} changed pages" if packets != 1 else "the one packet sent", style=f"bold {TEAL}")
+                    upcoming = Text("waiting for the repeater", style=SOFT)
+                else:
+                    status = Text(f"{sent} of {packets} packets sent ({100 * sent // max(packets, 1)} %), {left} to go")
+                    if now and now[0] == 1 and now[3] > 1:
+                        detail = Text(f"page {min(done + 1, total)} of {total}: packet {now[2]} of {now[3]} sent", style=SOFT)
+                    else:
+                        detail = Text(f"{done} of {total} changed pages sent", style=SOFT)
+                    upcoming = Text(upcoming or "next packet now", style=TEAL)
+                    upcoming.append(f", about {span(provider.time_left(bytes.fromhex(key)))} left", style=SOFT)
+                done, total = sent, packets
+            cell = Table.grid(expand=True)
+            cell.add_column(ratio=1)
+            cell.add_row(status)
+            cell.add_row(bar(done, total, None, ORANGE if stage == "manifest" else TEAL))
+            for line in (detail, upcoming):
+                if line:
+                    cell.add_row(line)
+            status = cell
             rssi = peer.get("rssi")
             signal = Text(f"{len(provider.hops)} hop" + ("s" if len(provider.hops) > 1 else ""), style=SOFT) if provider.hops else (Text(f"{rssi} dBm", style=TEAL if rssi is not None and rssi > -100 else ORANGE) if rssi is not None else Text(""))
-            grid.add_row(label, version_of(provider.manifest), status, bar(done, total, 32, ORANGE if stage == "manifest" else TEAL), signal, age(provider.now() - peer["at"]))
+            grid.add_row(label, version_of(provider.manifest), status, signal, age(provider.now() - peer["at"]))
             rows += 1
         if rows == 0:
             return panel(Align.center(Text("No repeater has reported yet. The query goes out at growing intervals.", style=SOFT)), "Repeaters")

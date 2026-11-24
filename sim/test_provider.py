@@ -169,6 +169,39 @@ check(order == (3, 1, 3, True), f"offer is not repeated while data is waiting: {
 check(quiet[0] >= 500.0 and quiet[1] == 7 and quiet[2] == 0.0, f"time since the last query is not tracked: {quiet}")
 
 
+def progress():
+    clock = [0.0]
+    provider = Provider(manifest, blocks, bytes.fromhex("a1b2c3d4"), lambda n: 100.0, budget_ppm=50000, offer_min=10.0, offer_max=120.0,
+                        now=lambda: clock[0], rng=random.Random(4).random)
+    provider.offer_at = 1e9
+    peer = bytes.fromhex("77010203")
+    provider.wants[peer] = {page for page in range(provider.pages) if blocks[page]}
+    total, sent, steady, on_time, parts = provider.packets_total(), 0, True, True, 0
+    first = provider.packets_left(peer)
+    whole = provider.time_left(peer)
+    started = clock[0]
+    while provider.busy() and sent < 10000:
+        left = provider.packets_left(peer)
+        if provider.poll() is None:
+            wait = provider.next_in()
+            on_time = on_time and wait is not None and wait > 0.0
+            clock[0] += (wait or 0.0) + 0.001
+            on_time = on_time and provider.poll() is not None
+        sent += 1
+        steady = steady and provider.packets_left(peer) == left - 1
+        now = provider.current()
+        parts = max(parts, now[3] if now else 0)
+    return first, total, sent, steady, on_time, parts, provider.next_in(), whole, clock[0] - started
+
+
+first, total, sent, steady, on_time, parts, idle, whole, took = progress()
+check(first == total and sent == total and steady, f"packet count does not match what is sent: {first} waiting, {total} expected, {sent} sent, steady {steady}")
+check(on_time, "the next packet does not go out at the announced time")
+check(parts > 1, "no page with several packets in the test package")
+check(idle is None, "a waiting time is shown although nothing is waiting")
+check(whole > 0.0 and abs(whole - took) < 5.0, f"remaining time {whole:.0f} s does not fit the {took:.0f} s the transfer took")
+
+
 def both_queries():
     finder = Finder(bytes.fromhex("a1b2c3d4"), hashlib.sha256(open(os.path.join(fixture, "good.pub"), "rb").read()).digest()[:8],
                     lambda n: 1.0, Budget(50000, lambda: 0.0), now=lambda: 0.0, rng=random.Random(5).random)

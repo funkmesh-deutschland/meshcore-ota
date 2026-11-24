@@ -46,6 +46,10 @@ class Budget:
         self.ms -= cost
         return True
 
+    def wait(self, cost):
+        have = min(10000.0, self.ms + (self.now() - self.at) * 1000.0 * self.ppm / 1e6)
+        return max(0.0, (cost - have) * 1000.0 / self.ppm)
+
 
 class Finder:
     def __init__(self, self_id, key_id, airtime_ms, budget, first=3.0, least=30.0, most=1800.0, now=time.monotonic, rng=random.random):
@@ -212,6 +216,7 @@ class Provider:
         self.pongs = []
         self.sent = 0
         self.sent_ms = 0.0
+        self.waiting = 0.0
         self.received = 0
         self.requests = 0
         self.seeks = 0
@@ -329,15 +334,60 @@ class Provider:
     def busy(self):
         return bool(self.pongs or self.repairs or any(self.wants.values()))
 
+    def parts(self, kind, index):
+        item = self._item(kind, index)
+        return (len(item) + CHUNK - 1) // CHUNK if item else 0
+
+    def _packets(self, pages):
+        small = sorted(page for page in pages if len(self.blocks[page]) <= CHUNK)
+        count, i = sum(self.parts(1, page) for page in pages if len(self.blocks[page]) > CHUNK), 0
+        while i < len(small):
+            total, k = len(self.blocks[small[i]]), i + 1
+            while k < len(small) and k - i < 255 and small[k] == small[k - 1] + 1 and total + len(self.blocks[small[k]]) <= CHUNK:
+                total += len(self.blocks[small[k]])
+                k += 1
+            count += 1
+            i = k
+        return count
+
+    def packets_total(self):
+        return self._packets({page for page in range(self.pages) if self.blocks[page]})
+
+    def packets_left(self, peer=None):
+        queued = [entry for entry in self.repairs if entry[0] == 1]
+        wanted = set(self.wants.get(peer, ())) if peer else set().union(*self.wants.values())
+        return sum(bin(entry[2]).count("1") for entry in queued) + self._packets(wanted - {entry[1] for entry in queued})
+
+    def current(self):
+        if not self.repairs:
+            return None
+        kind, index, mask = self.repairs[0]
+        total = self.parts(kind, index)
+        return kind, index, total - min(total, bin(mask).count("1")), total
+
+    def packet_cost(self):
+        length = HEADER + 10 + CHUNK + 2
+        return self.airtime_ms(length + len(self.path)) * (len(self.hops) + 1)
+
+    def next_in(self):
+        return self.budget.wait(self.waiting) if self.waiting else None
+
+    def time_left(self, peer=None):
+        left = self.packets_left(peer)
+        return self.budget.wait(left * self.packet_cost()) if left else 0.0
+
     def poll(self):
         packet, what = self._next_packet()
         if packet is None:
+            self.waiting = 0.0
             return None
         routed = bool(self.hops) and what[0] != "pong"
         cost = self.airtime_ms(len(packet) + 2 + (len(self.path) if routed else 0)) * (len(self.hops) + 1 if routed else 1)
         if not self.budget.take(cost):
             self.sequence -= 1
+            self.waiting = cost
             return None
+        self.waiting = 0.0
         self.sent += 1
         self.sent_ms += cost
         self.last_path = self.path if routed else b""
