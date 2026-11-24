@@ -261,6 +261,8 @@ The firmware adds `ota` to the MeshCore command line. The commands work over USB
 | `ota confirm` | confirm the trial boot by hand | USB only |
 | `ota ping`, `ota pong` | ping neighbours, query the reply | USB and admin |
 
+On nRF52840, the commands `ota key set`, `ota key clear`, `ota preset <name>`, `ota locksettings on`, `ota locksettings off`, `ota apply`, `ota drop`, `ota reset`, `ota load` and `ota confirm` reply with `ERR Bluetooth is active, try later` while Bluetooth is active on the repeater (for example after `start ota`).
+
 `ota info` replies, for example:
 
 ```
@@ -287,6 +289,7 @@ OK fw=v1.17.1+2 loading v1.18.0+2 40/93 w=40 old=0 id=0011223344556677 loader=id
 | `ext` | the package store is in the external flash |
 | `direct` | ESP32: switch by changing the boot partition |
 | `FLASH-BLOCKED` | a write access was rejected. Appears directly after `OK` |
+| `PAUSED` | nRF52840: Bluetooth is active, MeshCore-OTA rests until the next restart. Appears directly after `OK` |
 
 ## Limitations
 

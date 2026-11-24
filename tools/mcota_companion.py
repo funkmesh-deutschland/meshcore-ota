@@ -31,6 +31,7 @@ PUSH_NEW_ADVERT = 0x8A
 PUSH_PATH_DISCOVERY = 0x8D
 DISCOVER_GAP = 90.0
 DISCOVER_AGAIN = 3600.0
+BUSY_QUERY_GAPS = 10
 MAX_HOPS = 2
 WIDE_HOPS_VERSION = 14
 TYPE_REPEATER = 2
@@ -398,12 +399,22 @@ async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=
                     elif all(p.manifest != manifest or p.target for p in providers):
                         providers.append(provider_for(manifest, blocks))
                         providers[-1].offer_at = time.monotonic() + 1.0
+                    else:
+                        for known in providers:
+                            if known.manifest == manifest and not known.target:
+                                known.offer_at = min(known.offer_at, time.monotonic() + 1.0)
                     report(companion, providers, False, f"{name}: {text}")
             sent = False
             if finder and finder.pongs:
                 answer = finder.poll()
                 if answer is not None:
                     if not await companion.send_raw(*answer):
+                        report(companion, providers, False, f"Companion: {companion.last_error}")
+                    sent = True
+            if not sent and finder and any(p.busy() for p in providers) and finder.quiet() >= offer_min * BUSY_QUERY_GAPS:
+                asked = finder.poll()
+                if asked is not None:
+                    if not await companion.send_raw(*asked):
                         report(companion, providers, False, f"Companion: {companion.last_error}")
                     sent = True
             for step in range(0 if sent else len(providers)):

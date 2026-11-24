@@ -42,8 +42,11 @@ index 61b6c149..91404f77 100644
  #ifdef WITH_BRIDGE
    bridge.loop();
  #endif
-@@ -1338,3 +1350,51 @@ bool MyMesh::hasPendingWork() const {
+@@ -1338,3 +1350,54 @@ bool MyMesh::hasPendingWork() const {
  #endif
++#ifdef MCOTA_ENABLED
++  if (mcota_service.pending()) return true;
++#endif
    return _mgr->getOutboundTotal() > 0;
  }
 +

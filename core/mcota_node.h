@@ -15,6 +15,7 @@
 #define MCOTA_KEYS 2u
 #define MCOTA_MAP_BYTES (MCOTA_MAX_PAGES / 8u)
 #define MCOTA_PEERS 4u
+#define MCOTA_STALL_QUIETS 8u
 #define MCOTA_PARTIALS 2u
 #define MCOTA_REPAIRS 8u
 #define MCOTA_ASK_PARTS 6u
@@ -211,6 +212,7 @@ bool mcota_node_seed_manifest(mcota_node_t *n, const uint8_t *raw, uint32_t len)
 bool mcota_node_seed_block(mcota_node_t *n, uint32_t index, const uint8_t *data, uint32_t len);
 bool mcota_node_apply(mcota_node_t *n);
 bool mcota_node_apply_due(mcota_node_t *n);
+bool mcota_node_pending(const mcota_node_t *n);
 bool mcota_node_no_rollback(const mcota_node_t *n);
 bool mcota_node_needs_command(const mcota_node_t *n);
 bool mcota_node_runs_requested(mcota_node_t *n);

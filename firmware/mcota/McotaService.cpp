@@ -232,7 +232,14 @@ void McotaService::begin(McotaHost *h, const uint8_t *self_pub_key) {
 }
 
 void McotaService::onPacket(const uint8_t *data, uint32_t len) {
-  if (ready) mcota_node_receive(&node, data, len);
+  if (ready && !mcota_port_busy()) mcota_node_receive(&node, data, len);
+}
+
+bool McotaService::pending() {
+  if (!ready) return false;
+  if (reboot_at) return true;
+  if (mcota_port_busy()) return false;
+  return mcota_node_pending(&node) || mcota_state(cfg.flash, &cfg.layout) == MCOTA_STATE_TRIAL;
 }
 
 void McotaService::onNeighbourAnswer() {
@@ -243,9 +250,10 @@ void McotaService::loop() {
   if (!ready) return;
   uint32_t now = millis();
   if (reboot_at && (int32_t)(now - reboot_at) >= 0) host->mcotaReboot();
+  if (mcota_port_busy()) return;
   mcota_node_loop(&node);
 #if MCOTA_PRESET_COUNT > 0
-  if (!preset_checked && now - started_at >= PRESET_AFTER_MS && !mcota_port_busy()) {
+  if (!preset_checked && now - started_at >= PRESET_AFTER_MS) {
     preset_checked = true;
     if (!settings_locked && preset_applied != preset_hash(preset_active())) preset_apply(preset_active());
   }
@@ -320,6 +328,14 @@ static const char *loader_name() {
   }
 }
 
+static bool writes(const char *arg) {
+  static const char *const starts[] = { "key set ", "key clear ", "load ", "apply", "drop", "reset", "confirm", "preset ", "locksettings " };
+  for (uint32_t i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+    if (strncmp(arg, starts[i], strlen(starts[i])) == 0) return true;
+  }
+  return false;
+}
+
 bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
   const char *prefix = NULL;
   int room = REPLY_MAX;
@@ -339,13 +355,15 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
 
   if (!ready) {
     strcpy(reply, "ERR not ready");
+  } else if (writes(arg) && mcota_port_busy()) {
+    strcpy(reply, "ERR Bluetooth is active, try later");
   } else if (strcmp(arg, "info") == 0 || arg[0] == 0) {
     char from[9] = "-";
     bool loading = node.cand_active || (node.has_manifest && node.state == MCOTA_NODE_FETCHING);
     hex(id, node.campaign, 8);
     if (node.provider_set && loading) hex(from, node.provider, 4);
     snprintf(reply, room, "OK%s fw=%s %s %s %u/%u w=%u old=%u id=%s loader=%s from=%s age=%us budget=%u.%u%% tx=%u rx=%u%s%s%s%s",
-             mcota_port_blocked() ? " FLASH-BLOCKED" : "", MCOTA_TAG, state_name(), node.has_manifest ? node.manifest.version : "-", (unsigned)node.have,
+             mcota_port_blocked() ? " FLASH-BLOCKED" : mcota_port_busy() ? " PAUSED" : "", MCOTA_TAG, state_name(), node.has_manifest ? node.manifest.version : "-", (unsigned)node.have,
              node.has_manifest ? (unsigned)node.manifest.pages : 0u, (unsigned)node.serve_count, (unsigned)mcota_node_archives(&node), node.has_manifest ? id : "-", loader_name(),
              from, (unsigned)((millis() - node.useful_at) / 1000u),
              (unsigned)(MCOTA_BUDGET_PPM / 10000), (unsigned)(MCOTA_BUDGET_PPM % 10000 / 1000), (unsigned)node.tx_packets, (unsigned)node.rx_packets,
@@ -476,8 +494,6 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
     int found = preset_index(arg + 7);
     if (found < 0) {
       strcpy(reply, "ERR unknown preset, list with ota preset");
-    } else if (mcota_port_busy()) {
-      strcpy(reply, "ERR Bluetooth is active, try later");
     } else {
       preset_apply((uint32_t)found);
       snprintf(reply, room, "OK %s applied, %u errors", preset_names[found], (unsigned)preset_failed);
@@ -488,13 +504,9 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
   } else if (strcmp(arg, "locksettings") == 0) {
     strcpy(reply, settings_locked ? "OK on" : "OK off");
   } else if (strcmp(arg, "locksettings on") == 0 || strcmp(arg, "locksettings off") == 0) {
-    if (mcota_port_busy()) {
-      strcpy(reply, "ERR Bluetooth is active, try later");
-    } else {
-      settings_locked = arg[14] == 'n';
-      save_keys();
-      strcpy(reply, mcota_port_blocked() ? "ERR flash blocked" : settings_locked ? "OK on" : "OK off");
-    }
+    settings_locked = arg[14] == 'n';
+    save_keys();
+    strcpy(reply, mcota_port_blocked() ? "ERR flash blocked" : settings_locked ? "OK on" : "OK off");
   } else {
     strcpy(reply, "ERR ota info|peers|key|preset|locksettings|hash|load|apply|drop|reset|confirm|ping|pong");
   }

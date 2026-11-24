@@ -365,6 +365,7 @@ static bool adopt(mcota_node_t *n, const uint8_t *raw, uint32_t len, bool from_s
 
   sha(n->manifest_raw, len, id);
   copy(n->campaign, id, 8u);
+  if (!from_store) n->useful_at = now_ms(n);
   n->has_manifest = true;
   n->old_valid = false;
   n->cand_active = false;
@@ -853,9 +854,21 @@ static void direct_chunk(mcota_node_t *n, uint32_t index, uint32_t len, uint32_t
   }
 }
 
-static bool accepts_new_campaign(const mcota_node_t *n) {
+static bool stalled(mcota_node_t *n) {
+  return n->state == MCOTA_NODE_FETCHING && now_ms(n) - n->useful_at > MCOTA_STALL_QUIETS * quiet_ms(n);
+}
+
+static bool accepts_new_campaign(mcota_node_t *n) {
   if (busy_swapping(n)) return false;
-  return !n->has_manifest || n->state == MCOTA_NODE_APPLIED || n->state == MCOTA_NODE_FAILED || n->state == MCOTA_NODE_IDLE;
+  return !n->has_manifest || n->state == MCOTA_NODE_APPLIED || n->state == MCOTA_NODE_FAILED || n->state == MCOTA_NODE_IDLE || stalled(n);
+}
+
+static bool candidate_idle(mcota_node_t *n) {
+  mcota_partial_t *part = partial_find(n, 0u, 0u);
+  uint32_t now = now_ms(n);
+  if (part && part->mask != 0u) return false;
+  if (n->provider_set) return n->asked && now - n->asked_at > interval_ms(n);
+  return now - n->cand_at > interval_ms(n);
 }
 
 static uint32_t offer_score(const mcota_node_t *n, const uint8_t *map) {
@@ -923,7 +936,7 @@ static void on_offer(mcota_node_t *n, const uint8_t *p, uint32_t len) {
     if (for_me && !n->provider_set) { set_provider(n, sender, map, mb, via); ask_soon(n, 2000u); }
     return;
   }
-  if (n->cand_active || !accepts_new_campaign(n)) return;
+  if (n->cand_active ? !candidate_idle(n) : !accepts_new_campaign(n)) return;
   if (n->ignored_set && same(campaign, n->ignored, 8u)) return;
   if (key_index(n, key_id) < 0) return;
   board_hash(n->cfg.board, mine);
@@ -1218,14 +1231,19 @@ static bool serve_step(mcota_node_t *n) {
   }
 }
 
+static uint32_t same_next(const mcota_node_t *n) {
+  uint32_t i;
+  if (!n->has_manifest || n->state != MCOTA_NODE_FETCHING || n->cfg.compact) return MCOTA_MAX_PAGES;
+  for (i = 0; i < n->manifest.pages; i++) {
+    if (mcota_manifest_same(&n->manifest, i) && !map_get(n->have_map, i)) return i;
+  }
+  return MCOTA_MAX_PAGES;
+}
+
 static bool copy_same(mcota_node_t *n) {
   const mcota_flash_t *f = n->cfg.flash;
-  uint32_t i, k, len;
-  if (!n->has_manifest || n->state != MCOTA_NODE_FETCHING || n->cfg.compact) return false;
-  for (i = 0; i < n->manifest.pages; i++) {
-    if (mcota_manifest_same(&n->manifest, i) && !map_get(n->have_map, i)) break;
-  }
-  if (i >= n->manifest.pages) return false;
+  uint32_t i = same_next(n), k, len;
+  if (i >= MCOTA_MAX_PAGES) return false;
   len = mcota_manifest_page_len(&n->manifest, i);
   f->read(f->ctx, n->cfg.layout.slot_a + i * MCOTA_PAGE_SIZE, n->page, len);
   for (k = len; k < MCOTA_PAGE_SIZE; k++) n->page[k] = 0xFFu;
@@ -1301,6 +1319,10 @@ void mcota_node_loop(mcota_node_t *n) {
       n->seek_at = now + n->seek_interval / 2u + rnd(n, n->seek_interval / 2u + 1u);
     }
   }
+}
+
+bool mcota_node_pending(const mcota_node_t *n) {
+  return n->hello_due || n->cand_active || same_next(n) < MCOTA_MAX_PAGES;
 }
 
 bool mcota_node_seed_manifest(mcota_node_t *n, const uint8_t *raw, uint32_t len) {

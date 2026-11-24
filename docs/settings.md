@@ -67,7 +67,7 @@ The commands work over USB and through admin access over the air. The reply to `
 OK active=standard state=applied lock=off errors=0 list=standard,dense
 ```
 
-On nRF52840, preset and lock cannot be changed while Bluetooth is active on the repeater (for example after `start ota`). The repeater then replies with `ERR Bluetooth is active, try later`.
+On nRF52840, preset and lock cannot be changed while Bluetooth is active on the repeater (for example after `start ota`). The repeater then replies with `ERR Bluetooth is active, try later`. The same applies to all other `ota` commands that write, see [app.md](app.md).
 
 ## When values are overwritten
 

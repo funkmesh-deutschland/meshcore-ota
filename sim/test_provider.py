@@ -147,6 +147,28 @@ if found:
     print(f"Hello over 2 hops after {seconds:.0f} s, return route {back[0]}")
 
 
+def while_busy():
+    clock = [0.0]
+    provider = Provider(manifest, blocks, bytes.fromhex("a1b2c3d4"), lambda n: 1.0, budget_ppm=50000, offer_min=10.0, offer_max=120.0,
+                        now=lambda: clock[0], rng=random.Random(4).random)
+    provider.wants[bytes.fromhex("77010203")] = set(range(provider.pages))
+    clock[0] = provider.offer_at - 1.0
+    first = provider.poll()
+    clock[0] = provider.offer_at + 1.0
+    second = provider.poll()
+    third = provider.poll()
+    finder = Finder(bytes.fromhex("a1b2c3d4"), bytes(8), lambda n: 1.0, Budget(50000, lambda: clock[0]), first=0.0, now=lambda: clock[0], rng=random.Random(5).random)
+    clock[0] += 500.0
+    before = finder.quiet()
+    asked = finder.poll()
+    return (first and first[2], second and second[2], third and third[2], provider.busy()), (before, asked and asked[0][2], finder.quiet())
+
+
+order, quiet = while_busy()
+check(order == (3, 1, 3, True), f"offer is not repeated while data is waiting: {order}")
+check(quiet[0] >= 500.0 and quiet[1] == 7 and quiet[2] == 0.0, f"time since the last query is not tracked: {quiet}")
+
+
 def both_queries():
     finder = Finder(bytes.fromhex("a1b2c3d4"), hashlib.sha256(open(os.path.join(fixture, "good.pub"), "rb").read()).digest()[:8],
                     lambda n: 1.0, Budget(50000, lambda: 0.0), now=lambda: 0.0, rng=random.Random(5).random)

@@ -66,6 +66,7 @@ class Finder:
         self.seen = {}
         self.routes = {}
         self.pongs = []
+        self.asked_at = now()
 
     def route(self, target, path, hop_size):
         target, path = bytes(target[:4]), bytes(path)
@@ -110,10 +111,15 @@ class Finder:
         cost = self.airtime_ms(len(packet) + 2 + hops * 3) * (hops + 1)
         if not self.budget.take(cost):
             return False
+        if packet[2] == MSG_QUERY:
+            self.asked_at = self.now()
         self.sequence += 1
         self.sent += 1
         self.sent_ms += cost
         return True
+
+    def quiet(self):
+        return self.now() - self.asked_at
 
     def poll(self):
         now = self.now()
@@ -298,6 +304,8 @@ class Provider:
     def _next_packet(self):
         if self.pongs:
             return self._packet(MSG_PONG, self.pongs[0]), ("pong",)
+        if self.now() >= self.offer_at:
+            return self._packet(MSG_OFFER, self.offer_body), ("offer",)
         if not self.repairs:
             page = self._next_page()
             if page is not None and len(self.blocks[page]) > CHUNK:
@@ -316,8 +324,6 @@ class Provider:
             chunk = (mask & -mask).bit_length() - 1
             item = self._item(kind, index)
             return self._data(kind, index, chunk, item[chunk * CHUNK:(chunk + 1) * CHUNK]), ("chunk",)
-        if self.now() >= self.offer_at:
-            return self._packet(MSG_OFFER, self.offer_body), ("offer",)
         return None, None
 
     def busy(self):
