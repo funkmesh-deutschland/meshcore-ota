@@ -799,8 +799,10 @@ def send_packages(args, packages, old_versions, key_id=None, resolve=None, mine=
         for provider in providers:
             version = package_version(provider.manifest)
             for k, v in provider.peers.items():
-                left = len(provider.wants.get(bytes.fromhex(k), ()))
-                state = "fetching manifest" if v["kind"] == 0 else f"{left} of {provider.pages} pages still to send"
+                left = provider.packets_left(bytes.fromhex(k))
+                wait = provider.next_in()
+                state = "fetching manifest" if v["kind"] == 0 else "all packets sent" if not left else (
+                    f"{left} of {provider.packets_total()} packets still to send, next " + ("now" if not wait or wait < 1.0 else f"in {wait:.0f} s"))
                 parts.append(f"{k} loading {version}: {state} ({v['rssi']} dBm, {provider.now() - v['at']:.0f} s ago)")
         print(f"{time.strftime('%H:%M:%S')} sent {sum(p.sent for p in providers)} packets ({sum(p.sent_ms for p in providers) / 1000:.0f} s airtime), "
               f"requests {sum(p.requests for p in providers)}, repeaters: {'; '.join(parts) or 'nobody yet'}", flush=True)
