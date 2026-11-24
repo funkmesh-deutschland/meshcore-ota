@@ -236,6 +236,10 @@ void mcota_boot(const mcota_flash_t *f, const mcota_layout_t *l) {
 
   if (marked(f, l, MCOTA_W_INPLACE) && !marked(f, l, MCOTA_W_CONFIRMED)) mark(f, l, MCOTA_W_CONFIRMED);
   if (marked(f, l, MCOTA_W_CONFIRMED)) return;
+  if (!matches(f, l->slot_a, h[MCOTA_W_NEW_SIZE], &h[MCOTA_W_NEW_HASH])) {
+    mark(f, l, MCOTA_W_REJECTED);
+    return;
+  }
   trials = mcota_trials(f, l);
   if (trials >= MCOTA_MAX_TRIALS) {
     revert(f, l, pages);
@@ -296,6 +300,13 @@ bool mcota_request_read(const mcota_flash_t *f, const mcota_layout_t *l, mcota_r
     out->old_hash[i] = ((const uint8_t *)&h[MCOTA_W_OLD_HASH])[i];
   }
   return true;
+}
+
+bool mcota_clear(const mcota_flash_t *f, const mcota_layout_t *l) {
+  uint32_t i;
+  if (mcota_state(f, l) == MCOTA_STATE_ARMED) return false;
+  for (i = 0; i < MCOTA_STATUS_PAGES; i++) f->erase(f->ctx, l->status + i * MCOTA_PAGE_SIZE);
+  return mcota_state(f, l) == MCOTA_STATE_NONE;
 }
 
 void mcota_confirm(const mcota_flash_t *f, const mcota_layout_t *l) {

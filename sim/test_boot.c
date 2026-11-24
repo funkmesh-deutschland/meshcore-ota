@@ -172,6 +172,20 @@ int main(void) {
   boot(0);
   check(mcota_state(&flash, &layout) == MCOTA_STATE_REJECTED, "changed running image is rejected", 0);
 
+  for (i = 1; i <= 3; i++) {
+    int t;
+    prepare(0);
+    for (t = 0; t < i; t++) boot(0);
+    fill(mem + layout.slot_a, sizeof(new_image), 33);
+    memcpy(start, mem, sizeof(mem));
+    for (t = 0; t < 4; t++) boot(0);
+    check(memcmp(mem + layout.slot_a, start + layout.slot_a, sizeof(new_image)) == 0, "a firmware installed during the trial is changed by the loader", i);
+    check(mcota_state(&flash, &layout) == MCOTA_STATE_REJECTED, "a firmware installed during the trial leaves the trial state", i);
+    check(mcota_clear(&flash, &layout) && mcota_state(&flash, &layout) == MCOTA_STATE_NONE, "the status cannot be cleared", i);
+  }
+  prepare(0);
+  check(!mcota_clear(&flash, &layout) && mcota_state(&flash, &layout) == MCOTA_STATE_ARMED, "the status is cleared before the swap", 0);
+
   memset(mem, 0xFF, sizeof(mem));
   memcpy(mem + layout.slot_a, old_image, sizeof(old_image));
   boot(0);

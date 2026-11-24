@@ -19,6 +19,7 @@ public:
   void loop();
   void onPacket(const uint8_t *data, uint32_t len);
   void onNeighbourAnswer();
+  bool pending();
   bool handleCommand(bool usb, const char *command, char *reply);
 };
 

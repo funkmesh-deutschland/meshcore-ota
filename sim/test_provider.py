@@ -137,6 +137,7 @@ check(found is not None and not back, "repeater does not answer the query of the
 if found:
     check(found["size"] == len(old_image) and found["hash"] == hashlib.sha256(old_image).digest()[:8], "reported firmware is wrong")
     check(found["board"] == hashlib.sha256(b"sim_board").digest()[:4] and found["tag"] == "1.0.0", "reported device type or firmware tag is wrong")
+    check(found["node"] == 0 and found["loader"] == 0 and found["job"] == bytes(4), f"state in the hello is wrong: {found['node']} {found['loader']} {found['job']}")
     print(f"Hello of the repeater: firmware {found['tag']}, {found['size']} bytes, after {seconds:.0f} s")
 
 found, back, asked, seconds = ask(bytes.fromhex("77010203"), bytes.fromhex("aabbccdd"), first=1e9)
@@ -144,6 +145,28 @@ check(found is not None and found["hops"] == 2 and back == ["ccddaabb"] and aske
       f"hello over 2 hops wrong: {found and found['hops']}, return route {back}, outbound route {asked[:1]}")
 if found:
     print(f"Hello over 2 hops after {seconds:.0f} s, return route {back[0]}")
+
+
+def while_busy():
+    clock = [0.0]
+    provider = Provider(manifest, blocks, bytes.fromhex("a1b2c3d4"), lambda n: 1.0, budget_ppm=50000, offer_min=10.0, offer_max=120.0,
+                        now=lambda: clock[0], rng=random.Random(4).random)
+    provider.wants[bytes.fromhex("77010203")] = set(range(provider.pages))
+    clock[0] = provider.offer_at - 1.0
+    first = provider.poll()
+    clock[0] = provider.offer_at + 1.0
+    second = provider.poll()
+    third = provider.poll()
+    finder = Finder(bytes.fromhex("a1b2c3d4"), bytes(8), lambda n: 1.0, Budget(50000, lambda: clock[0]), first=0.0, now=lambda: clock[0], rng=random.Random(5).random)
+    clock[0] += 500.0
+    before = finder.quiet()
+    asked = finder.poll()
+    return (first and first[2], second and second[2], third and third[2], provider.busy()), (before, asked and asked[0][2], finder.quiet())
+
+
+order, quiet = while_busy()
+check(order == (3, 1, 3, True), f"offer is not repeated while data is waiting: {order}")
+check(quiet[0] >= 500.0 and quiet[1] == 7 and quiet[2] == 0.0, f"time since the last query is not tracked: {quiet}")
 
 
 def both_queries():
@@ -174,6 +197,17 @@ def both_queries():
     proc.stdin.close(); proc.wait()
     return replies
 
+
+pinger = Finder(bytes.fromhex("a1b2c3d4"), bytes(8), lambda n: 1.0, Budget(50000, lambda: 0.0), first=1e9, now=lambda: 0.0)
+check(pinger.receive(b"L2\x04\x00" + bytes.fromhex("7701020311223344")) is None and len(pinger.pongs) == 1, "a ping is not noted")
+answer = pinger.poll()
+check(answer is not None and answer[0][2] == 5 and answer[0][4:] == bytes.fromhex("77010203a1b2c3d411223344") and answer[1] == b"",
+      f"a ping is not answered with a pong: {answer}")
+check(pinger.poll() is None, "a pong is sent twice")
+
+two = Finder(bytes.fromhex("a1b2c3d4"), [bytes([1]) * 8, bytes([2]) * 8], lambda n: 1.0, Budget(50000, lambda: 0.0), first=0.0, now=lambda: 0.0)
+first_query = two.poll()
+check(first_query is not None and first_query[0][8:16] == bytes([1]) * 8 and two.ask_at <= 60.0, "the first query does not use the current key or the second key is not asked soon")
 
 replies = both_queries()
 check(replies[:1] == [["V", "2", "ccddaabb"]], f"targeted query after a general one is not answered over the return route (repeater with a weak power amplifier): {replies}")

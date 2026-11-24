@@ -39,6 +39,8 @@ A node with stored blocks announces what it can deliver.
 
 With bit 0 only the target replies, and it does so along the return route. Offers with bit 0 are only sent by the operator's computer. Repeaters offer without a route.
 
+The computer repeats its offers while it is sending data, so that further repeaters can join a running transfer.
+
 ## Request (type 2)
 
 | Length | Contents |
@@ -101,8 +103,14 @@ A repeater that trusts this key replies with a hello, to a query without a route
 | 4 | size of the running firmware |
 | 8 | beginning of the SHA-256 of the running firmware |
 | up to 15 | name of the build as text |
+| 1 | zero byte, ends the name |
+| 1 | state of the update: 0 idle, 1 loading, 2 ready, 3 applied, 4 failed |
+| 1 | state of the loader: 0 idle, 1 swap, 2 trial, 3 confirmed, 4 rollback, 5 rejected |
+| 4 | beginning of the SHA-256 of the firmware the last job installed, zero without a job |
 
-From this the computer recognises which firmware is running and which package fits.
+The computer also sends queries while a transfer is running, at most one per ten offer intervals.
+
+From this the computer recognises which firmware is running and which package fits. It does not offer an update again that the repeater has rolled back or rejected, and it shows a running trial boot.
 
 ## Sequence at the receiver
 
@@ -111,6 +119,11 @@ From this the computer recognises which firmware is running and which package fi
 3. Overhear. Every block heard is applied and checked against the manifest.
 4. If nothing usable arrives for a while, request the missing pages. The waiting time is twice the interval at which a provider may send, plus 5 seconds and a random component.
 5. If 6 requests remain without usable data, give up the provider and look for another one with a seek.
+
+A receiver follows one update at a time. Two cases let another offer take over:
+
+- The manifest was requested, and nothing of it has arrived within one send interval of a provider. The offer then gives way to the next one that matches.
+- An update is loading, and no usable data has arrived for eight waiting periods. The receiver then accepts an offer for a different update and discards the pages loaded so far.
 
 ## Airtime
 
