@@ -12,10 +12,10 @@ A preset is a named list of settings, for example `standard` for most repeaters 
 | --- | --- |
 | `tx` | transmit power in dBm |
 | `advert.interval` | advert to neighbours, interval in minutes (0 means off) |
-| `flood.advert.interval` | advert to the whole network, interval in hours (0 means off) |
-| `flood.max` | maximum number of hops for forwarded flood packets |
-| `flood.max.unscoped` | maximum number of hops for flood packets without a region |
-| `flood.max.advert` | maximum number of hops for forwarded adverts |
+| `flood.advert.interval` | advert to the whole mesh, interval in hours (0 means off) |
+| `flood.max` | highest number of hops for forwarded flood packets |
+| `flood.max.unscoped` | highest number of hops for flood packets without a region |
+| `flood.max.advert` | highest number of hops for forwarded adverts |
 | `af` | airtime factor (pause after each transmission) |
 | `rxdelay` | delay before forwarding, depending on the signal |
 | `txdelay` | random delay when forwarding flood packets |
@@ -23,7 +23,7 @@ A preset is a named list of settings, for example `standard` for most repeaters 
 | `multi.acks` | additional acknowledgements (0 or 1) |
 | `path.hash.mode` | length of the hops in routes (0 means 1 byte, 1 means 2 bytes, 2 means 3 bytes) |
 | `loop.detect` | loop detection (`off`, `minimal`, `moderate`, `strict`) |
-| `agc.reset.interval` | readjust the receiver, interval in seconds (0 means off) |
+| `agc.reset.interval` | reset the receiver gain, interval in seconds (0 means off) |
 
 With `n` any other setting can be entered in the menu under its name from the `set` command. Only settings with a value are set. Everything else stays on the repeater as it is.
 

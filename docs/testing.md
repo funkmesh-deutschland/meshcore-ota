@@ -96,6 +96,8 @@ meshcore-ota load --port /dev/ttyACM0 v1-v2.mcota
 
 Expected on device A: `ota info` reports `ready v2` and all pages.
 
+Firmware built by the program carries a build number and only accepts a package with a higher one. `meshcore-ota update` sets it by itself. For a package made by hand with `pack`, `--build` has to be higher than the number of the running firmware.
+
 Or, with firmware from the program, over the air through a companion:
 
 ```

@@ -37,7 +37,7 @@ The connection is not encrypted and the password travels with every request. Ope
 
 ### Network
 
-The map shows the computer and the repeaters at their positions. A dotted grey line is the route the computer uses to reach a repeater. A dashed orange line is a package on its way from one station to the next, with the progress next to it.
+The map shows the computer and the repeaters at their positions. A dotted grey line is the route the computer uses to reach a repeater. A dashed orange line is a package on its way from one station to the next, with the progress next to it. Once everything is sent the line turns solid.
 
 The colour of a repeater tells its state:
 

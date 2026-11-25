@@ -10,6 +10,7 @@ An operator updates their own MeshCore repeaters over LoRa without having to go 
 - The firmware of a repeater carries the public key of its operator inside it. A repeater has two key slots, the second one can be filled over USB.
 - A repeater accepts data of an update only once it has the complete manifest and the signature matches one of its keys.
 - Without a key a repeater does not react to any offer.
+- Settings packages are signed with the same key and checked the same way, see [settings.md](settings.md).
 - Keys can be set or removed on the repeater over USB only. Over the air the key changes only through a signed update, see [keys.md](keys.md).
 
 Consequences:
@@ -31,7 +32,7 @@ Consequences:
 ### Finding neighbours
 
 1. A repeater that has stored blocks of a verified update offers it by zero-hop. The offer states the device type, the size and checksum of the firmware the update starts from, the key ID and which pages it can deliver. Offers are sent at growing intervals, from 1 minute to 1 hour.
-2. A neighbour reacts only if everything matches: it trusts the key, has the same device type and is running exactly the source firmware.
+2. A neighbour reacts for itself only if everything matches: it trusts the key, has the same device type and is running exactly the source firmware. A repeater with a package store also reacts to an offer it cannot use itself, as long as it trusts the key, see [Carrying packages for others](#carrying-packages-for-others).
 3. The neighbour first fetches the signed manifest and verifies the signature. Only then does it accept data.
 4. The neighbour tells the provider which pages it is missing. The provider sends them one after another without each having to be requested individually.
 5. A repeater already offers what it has while it is still fetching the rest.
@@ -167,7 +168,7 @@ Devices without external flash rebuild the new firmware in place, see [devices.m
 
 ### Write boundaries
 
-In the internal flash the firmware writes only to the status area, to the page with keys and preset selection and, on devices without external flash, to the free area behind the running firmware. The loader writes only from slot A to the end of the status area. The bootloader of the device and the SoftDevice are outside of that. Recovery through the double reset therefore remains available.
+In the internal flash the firmware writes only to the status area, to the page with keys and preset selection and, on devices without external flash, to the free area behind the running firmware. The loader writes only from slot A to the end of the status area. The bootloader of the device and the SoftDevice are outside of that. Recovery through the double reset therefore remains available. A settings package is stored as a file through the file system of MeshCore.
 
 As long as the SoftDevice is active (Bluetooth, for example after `start ota`), the firmware does not write to the internal flash. MeshCore-OTA pauses for that time: it ignores its radio packets, refuses commands that write, and `ota info` shows `PAUSED`. Bluetooth stays active until the next restart.
 
