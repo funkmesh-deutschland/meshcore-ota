@@ -183,7 +183,7 @@ def snapshot(companion, providers, old_versions, saved, log, ppm, test, started,
                 link(a, b, "route")
         if moving:
             link(me, ident, "data", package=moving["package"], progress=moving["done"] / max(moving["total"], 1), active=bool(moving["left"]))
-        if hello.get("from") and hello.get("node") == NODE_FETCHING:
+        if hello.get("from") and hello.get("node") == NODE_FETCHING and not (moving and hello["from"] == me):
             link(hello["from"], ident, "data", package=hello.get("campaign", b"").hex(), progress=(hello.get("have") or 0) / max(hello.get("pages") or 1, 1), active=True)
         for peer, missing in hello.get("peers", []):
             link(ident, peer, "data", package="", progress=None, active=missing > 0, missing=missing)

@@ -32,6 +32,7 @@ dd { margin: 0; }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; color: var(--teal); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rail); white-space: nowrap; }
 td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--rail); vertical-align: top; }
+td.fix { white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 .name { font-weight: 700; }
 .id { color: var(--soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -160,7 +161,7 @@ function renderTop() {
     : `<dt>Connection</dt><dd class="warn">connecting to the companion ...</dd>`;
   if (!a) { $("airtime").innerHTML = ""; return; }
   const next = a.next_s == null ? "nothing waiting" : a.next_s - drift() < 1 ? "now" : "in " + span(a.next_s - drift());
-  $("airtime").innerHTML = `<dt>Share now</dt><dd class="big">${a.now.toFixed(a.now < 1 ? 2 : 1)} %${a.max > a.base ? ` <span class="soft">between ${a.base} % and ${a.max} %, by channel load</span>` : ""}</dd>
+  $("airtime").innerHTML = `<dt>Share now</dt><dd><span class="big">${a.now.toFixed(a.now < 1 ? 2 : 1)} %</span>${a.max > a.base ? ` <span class="soft">(between ${a.base} % and ${a.max} %, by channel load)</span>` : ""}</dd>
     <dt>Used</dt><dd>${a.used.toFixed(2)} % since start</dd><dt>Channel</dt><dd>${a.heard.toFixed(2)} % in use by others</dd>
     <dt>Sent</dt><dd>${a.sent} packets, ${Math.round(a.sent_s)} s airtime</dd><dt>Next packet</dt><dd class="next">${next}</dd>
     <dt>Running</dt><dd>${span(a.running_s + drift())}</dd>`;
@@ -177,7 +178,6 @@ function progressHtml(r) {
       html += `<div><span class="next">${wait == null ? "" : wait < 1 ? "next packet now" : "next packet in " + span(wait)}</span>${p.left_s ? `<span class="soft">${wait == null ? "" : ", "}about ${span(p.left_s - drift())} left</span>` : ""}</div>`;
     }
   }
-  if (r.apply_in_s != null && r.state === "complete") html += `<div class="next">applies in about ${span(r.apply_in_s - drift())}</div>`;
   const extra = [];
   if (r.level != null) extra.push(`airtime ${r.level} %`);
   if (r.config != null) extra.push(`settings revision ${r.config}`);
@@ -203,8 +203,8 @@ function renderRepeaters() {
   $("repeaters").innerHTML = rows.length ? rows.map(r => `<tr>
     <td><div class="name">${esc(label(r))}</div><div class="id">${esc(r.id)}${r.board ? " · " + esc(r.board) : ""}</div></td>
     <td>${esc(r.firmware || "?")}</td><td>${progressHtml(r)}</td><td>${pathHtml(r)}</td>
-    <td>${r.rssi != null ? r.rssi + " dBm" : ""}${r.snr != null ? `<div class="soft">SNR ${r.snr}</div>` : ""}</td>
-    <td class="soft">${r.seen_s != null ? ago(r.seen_s + drift()) : r.last_seen ? ago(Date.now() / 1000 - r.last_seen) : "never"}</td>
+    <td class="fix">${r.rssi != null ? r.rssi + " dBm" : ""}${r.snr != null ? `<div class="soft">SNR ${r.snr}</div>` : ""}</td>
+    <td class="soft fix">${r.seen_s != null ? ago(r.seen_s + drift()) : r.last_seen ? ago(Date.now() / 1000 - r.last_seen) : "never"}</td>
     <td><div class="tools"><button data-edit="${esc(r.id)}">${r.mine ? "Edit" : "Add to my repeaters"}</button>${r.mine ? `<button data-remove="${esc(r.id)}">Remove</button>` : ""}<button data-query="${esc(r.id)}">Ask now</button></div></td>
   </tr>`).join("") : `<tr><td colspan="7" class="empty">No repeater has reported yet. Add your repeaters below, or wait for them to answer the query.</td></tr>`;
 }
@@ -254,6 +254,9 @@ function renderMap() {
   const hasGeo = list.some(n => n.lat != null);
   if (view == null) view = hasGeo ? "map" : "graph";
   $("view").textContent = view === "map" ? "Show as network diagram" : "Show on the map";
+  document.querySelector("#map .zoom").hidden = view !== "map";
+  $("tilesOn").parentElement.hidden = view !== "map";
+  box.style.cursor = view === "map" ? "" : "default";
   if (view === "map" && (!fitted || center == null)) { fit(list, w, h); fitted = true; }
   let pos = {};
   const tiles = $("tiles");
