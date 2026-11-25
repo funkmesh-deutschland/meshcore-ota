@@ -179,7 +179,7 @@ The program uses hops of 2 or 3 bytes in length only if the companion firmware s
 
 ## Airtime
 
-The companion starts at 0.5 % of the time. While it hears next to nothing from others it doubles the share every minute up to 5 %, and it falls back to 0.5 % at once when traffic appears. Both limits can be set in the menu (menu item 6) or with `--airtime` and `--airtime-max`, from 0.05 to 5 %. The same value for both keeps the share fixed.
+The companion starts at 0.5 % of the time. While it hears next to nothing from others it doubles the share every minute up to 5 %, and it falls back to 0.5 % at once when traffic appears. Both limits can be set in the menu (menu item 6) or with `--airtime` and `--airtime-max`, from 0.05 to 5 %. The same value for both keeps the share fixed. The program measures the load from the packets the companion reports as received. With a companion firmware that does not report them, the share stays at the lower limit.
 
 These settings apply to the companion at the computer. The repeaters follow the same rule between 0.5 % and 5 %, the test firmware uses a fixed 5 %. Details are in [concept.md](concept.md).
 

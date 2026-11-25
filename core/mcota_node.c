@@ -373,7 +373,7 @@ static bool adopt(mcota_node_t *n, const uint8_t *raw, uint32_t len, bool from_s
   if (!mcota_manifest_parse(raw, len, &m)) return false;
   key = key_index(n, m.key_id);
   if (key < 0) return false;
-  foreign = !fits_here(n, &m);
+  foreign = !fits_here(n, &m) || (!from_store && n->cand_active && n->cand_foreign);
   if (foreign && (from_store || !carries(n))) return false;
   if (!foreign && (m.pages > n->cfg.layout.slot_pages || swap_pages(&m) > n->cfg.layout.slot_pages)) return false;
   if (!n->cfg.verify(n->cfg.ctx, n->cfg.keys[key], m.signature, raw, len - MCOTA_MANIFEST_SIG)) return false;
@@ -1345,8 +1345,17 @@ static void settings_step(mcota_node_t *n) {
   }
 }
 
-void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
+static void send_pong(mcota_node_t *n) {
   uint8_t out[16];
+  uint32_t i;
+  if (!n->pong_due) return;
+  if (now_ms(n) - n->pong_at > 30000u) { n->pong_due = false; return; }
+  i = header(n, out, MCOTA_MSG_PONG);
+  copy(out + i, n->pong, 12u);
+  if (transmit(n, out, i + 12u, 0)) n->pong_due = false;
+}
+
+void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
   const uint8_t *body = data + MCOTA_HEADER;
   uint32_t i, body_len;
   if (len < MCOTA_HEADER || data[0] != 'L' || data[1] != '2') return;
@@ -1383,11 +1392,12 @@ void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
       break;
     case MCOTA_MSG_PING:
       if (body_len < 8u) break;
-      i = header(n, out, MCOTA_MSG_PONG);
-      copy(out + i, body, 4u); i += 4u;
-      copy(out + i, n->cfg.self, 4u); i += 4u;
-      copy(out + i, body + 4u, 4u); i += 4u;
-      transmit(n, out, i, 0);
+      copy(n->pong, body, 4u);
+      copy(n->pong + 4u, n->cfg.self, 4u);
+      copy(n->pong + 8u, body + 4u, 4u);
+      n->pong_due = true;
+      n->pong_at = now_ms(n);
+      send_pong(n);
       break;
     case MCOTA_MSG_PONG:
       if (body_len >= 12u && same(body, n->cfg.self, 4u) && n->ping_nonce != 0u && get32(body + 8u) == n->ping_nonce) n->pong_seen = true;
@@ -1605,6 +1615,7 @@ void mcota_node_loop(mcota_node_t *n) {
   uint32_t now = now_ms(n), i;
 
   adapt(n);
+  send_pong(n);
   if (copy_same(n)) return;
   if (n->hello_due && (int32_t)(now - n->hello_at) >= 0 && send_hello(n)) n->hello_due = false;
   settings_step(n);
@@ -1649,7 +1660,7 @@ void mcota_node_loop(mcota_node_t *n) {
 }
 
 bool mcota_node_pending(const mcota_node_t *n) {
-  return n->hello_due || n->cand_active || same_next(n) < MCOTA_MAX_PAGES || n->settings_send != 0u
+  return n->hello_due || n->pong_due || n->cand_active || same_next(n) < MCOTA_MAX_PAGES || n->settings_send != 0u
          || (n->settings_in_rev > n->settings_rev && n->settings_asks == 0u);
 }
 

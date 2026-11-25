@@ -1103,8 +1103,10 @@ def load_repeaters(home):
 
 def save_repeaters(home, data):
     import json
-    with open(os.path.join(home, "repeaters.json"), "w", encoding="utf-8") as fh:
+    path = os.path.join(home, "repeaters.json")
+    with open(path + ".new", "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
+    os.replace(path + ".new", path)
 
 
 def absent_repeaters(args):

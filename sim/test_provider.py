@@ -299,6 +299,13 @@ print(f"Settings over 2 hops: {settings.sent} packets, {settings.sent_ms / 1000:
 def load_control():
     clock = [0.0]
     budget = Budget(5000, lambda: clock[0], most=50000)
+    clock[0] += 300.0
+    budget.take(1e9)
+    deaf = budget.ppm
+    budget.heard(10.0)
+    clock[0] += 61.0
+    budget.take(1e9)
+    budget.ppm = 5000
     steps = []
     for _ in range(5):
         clock[0] += 61.0
@@ -314,10 +321,11 @@ def load_control():
     fixed = Budget(5000, lambda: clock[0])
     clock[0] += 600.0
     fixed.take(1e9)
-    return steps, dropped, held, fixed.ppm
+    return steps, dropped, held, fixed.ppm, deaf
 
 
-steps, dropped, held, plain = load_control()
+steps, dropped, held, plain, deaf = load_control()
+check(deaf == 5000, "airtime of the computer rises although the companion reports no received packets")
 check(steps == [10000, 20000, 40000, 50000, 50000], f"airtime of the computer does not rise on a quiet channel: {steps}")
 check(dropped == (5000, True) and held == 5000, f"airtime of the computer does not fall back with traffic: {dropped} {held}")
 check(plain == 5000, "airtime changes although no upper limit is set")

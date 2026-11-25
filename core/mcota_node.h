@@ -237,6 +237,9 @@ typedef struct {
   uint8_t sequence;
   uint32_t ping_nonce;
   bool pong_seen;
+  bool pong_due;
+  uint32_t pong_at;
+  uint8_t pong[12];
   uint32_t rx_packets;
   uint32_t bundles;
   uint32_t tx_packets;

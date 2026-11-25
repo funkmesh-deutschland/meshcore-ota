@@ -70,7 +70,7 @@ class Budget:
             self.busy_ms = 0.0
 
     def adapt(self):
-        if self.most <= self.base or self.now() - self.window_at < LOAD_WINDOW:
+        if self.most <= self.base or self.heard_ms == 0.0 or self.now() - self.window_at < LOAD_WINDOW:
             return
         if self.busy_ms * 1e6 <= LOAD_CALM_PPM * LOAD_WINDOW * 1000.0:
             self._fill()
