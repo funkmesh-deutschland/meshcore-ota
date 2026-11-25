@@ -48,7 +48,7 @@ What happens on import:
 
 1. The previous private key is copied to `keys/retired-<id>.key` and entered in `keys/retired.json`.
 2. The new key becomes `keys/signing.key`, and `keys/public.txt` is rewritten.
-3. The settings get a new revision, `v1.18.0+3` becomes `v1.18.0+4`.
+3. The build number rises, `v1.18.0+3` becomes `v1.18.0+4`.
 
 What happens over the air afterwards:
 

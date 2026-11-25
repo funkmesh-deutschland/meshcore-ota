@@ -682,7 +682,15 @@ def serial_command(port, line, wait=3.0):
 
 def cmd_load(args):
     import serial
-    manifest, blocks = read_package(args.package)
+    blob = None
+    if args.settings:
+        blob = settings_package(os.path.abspath(args.dir))
+        if blob is None:
+            raise SystemExit("There are no settings to load. Create a preset first (menu item 4).")
+    elif not args.package:
+        raise SystemExit("Give a package, or --settings for the current presets.")
+    else:
+        manifest, blocks = read_package(args.package)
     args.port = find_port(args.port)
     lock = port_lock(args.port)
     with serial.Serial(args.port, 115200, timeout=0.2) as port:
@@ -691,6 +699,12 @@ def cmd_load(args):
             if "OK" not in reply:
                 raise SystemExit(f"The repeater reports an error for '{line[:40]}': {reply.strip()}")
             return reply
+        if blob is not None:
+            run("ota load begin")
+            for pos in range(0, len(blob), 64):
+                run("ota load data " + blob[pos:pos + 64].hex())
+            print(run("ota load settings", 10.0).strip())
+            return
         run("ota load begin")
         for pos in range(0, len(manifest), 64):
             run("ota load data " + manifest[pos:pos + 64].hex())
@@ -1504,9 +1518,10 @@ def main():
     p.add_argument("package")
     p.add_argument("--pubkey")
     p.set_defaults(func=cmd_info)
-    p = sub.add_parser("load", help="load a package onto a repeater over USB")
+    p = sub.add_parser("load", help="load a package or the current presets onto a repeater over USB")
     p.add_argument("--port", required=True)
-    p.add_argument("package")
+    p.add_argument("--settings", action="store_true", help="load the current presets as a settings package instead of a firmware package")
+    p.add_argument("package", nargs="?")
     p.set_defaults(func=cmd_load)
     def send_args(p):
         p.add_argument("--airtime", type=float, help="share of airtime in per cent, 0.05 to 5. Default 0.5, in test mode 5")

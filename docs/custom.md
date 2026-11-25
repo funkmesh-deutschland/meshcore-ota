@@ -2,7 +2,7 @@
 
 By default the program builds from the official MeshCore repository. It can also build from another git repository or from source folders on the computer, and it can add build flags per device. This is meant for repeaters that need their own changes, for example additional sensors.
 
-Everything described here is part of the firmware. All repeaters of one device type must run identical firmware, so a change to the source, to a local source folder or to the build flags raises the settings revision and reaches the repeaters as an update.
+Everything described here is part of the firmware. All repeaters of one device type must run identical firmware, so a change to the source, to a local source folder or to the build flags raises the build number and reaches the repeaters as an update.
 
 ## Another git repository
 
@@ -35,7 +35,7 @@ A folder `sources/<version>/` next to the program is listed as a version, for ex
 
 A local folder takes precedence over a tag with the same version. It needs neither git nor an internet connection for the source, only the build tool.
 
-When files in a source folder change, the settings revision rises and the next build gets a new name, for example `v1.18.1+4` instead of `v1.18.1+3`.
+When files in a source folder change, the build number rises and the next build gets a new name, for example `v1.18.1+4` instead of `v1.18.1+3`.
 
 ## Build flags
 

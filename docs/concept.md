@@ -24,8 +24,9 @@ Consequences:
 
 - **Zero-hop only between repeaters.** Update data goes directly from one repeater to a neighbour in radio range. There is no flooding. An update travels from neighbour to neighbour.
 - **Only on request.** A repeater sends data only if a neighbour has requested it.
-- **0.5 % airtime, built in.** The value applies per repeater to everything MeshCore-OTA sends, including offers, requests and hellos. It cannot be changed on the repeater. At most 10 seconds of airtime are saved up. The test firmware has 5 %.
-- **The operator's computer** sends through its companion with 0.5 %, adjustable from 0.05 to 5 %. In addition it reaches repeaters up to 2 hops away on a fixed route.
+- **0.5 % airtime, more only on a quiet channel.** The share applies per repeater to everything MeshCore-OTA sends, including offers, requests and hellos. It rises step by step up to 5 % while the repeater hears next to nothing from others, and falls back to 0.5 % as soon as traffic appears, see [Load on the channel](#load-on-the-channel). At most 10 seconds of airtime are saved up. The test firmware uses a fixed 5 %.
+- **Lowest priority.** A repeater sends its own MeshCore-OTA packets only while MeshCore has nothing else waiting.
+- **The operator's computer** sends through its companion under the same rule. The lower limit is adjustable from 0.05 to 5 %, the upper limit as well. In addition it reaches repeaters up to 2 hops away on a fixed route.
 
 ### Finding neighbours
 
@@ -60,6 +61,39 @@ It queries over the air which of the operator's repeaters are present. Each one 
 MeshCore does not forward MeshCore-OTA packets by flooding, but it does forward them on a fixed route, also across repeaters without MeshCore-OTA. The computer uses this for repeaters up to 2 hops away. The program learns the route from adverts the companion has heard, from the stored routes of its contacts and from a path discovery to repeaters that the operator has entered as their own. Query, offer and data travel out along this route, hello and requests travel back along the return route. Each packet then costs airtime for every hop.
 
 Repeaters further away receive the update as it travels from neighbour to neighbour.
+
+### Load on the channel
+
+Every repeater measures how much airtime it receives, from the mesh and from other MeshCore-OTA nodes alike. MeshCore keeps this count anyway. Per minute:
+
+- If it receives for at most 0.3 seconds, the share doubles: 0.5, 1, 2, 4, 5 %.
+- If it receives for 1.2 seconds or more, the share is back at 0.5 % at once.
+
+The computer does the same with what its companion hears.
+
+Two providers in range of each other therefore slow each other down, and a repeater that is receiving an update at full speed passes it on at the low share. In the simulation a package that needs 504 minutes at a fixed 0.5 % arrives after 26 minutes on a channel without other traffic.
+
+### Carrying packages for others
+
+A package fits one device type and one source firmware. A repeater of another type in between would break the chain. Repeaters with a package store of their own with three slots therefore also collect packages they cannot use themselves, and hand them on like any other. These are devices with external flash such as the Seeed Xiao nRF52840, and ESP32 devices with enough room behind the firmware.
+
+- The package has to be signed with a key the repeater trusts.
+- An update for the repeater itself takes precedence and interrupts the collecting.
+- A carrying repeater never writes a foreign package into its firmware area and never applies it.
+- It cannot check the blocks, because that needs the firmware they belong to. It checks the signature of the manifest. The repeater that finally uses the package checks every page as always.
+- Only offers without a route start it. A transfer the computer sends to a single repeater on a route is not collected.
+
+The computer also offers the next update for repeaters of the operator that have not answered ten minutes after the start, so that carrying repeaters in range can take it towards them.
+
+### Reporting the state
+
+A hello tells the computer what a repeater is doing: the update it loads, how far it is, from whom, when it will apply it, and who loads from it, see [protocol.md](protocol.md). To keep this cheap:
+
+- A repeater reports by itself when something changes: start of loading, update complete, restart into the new firmware, confirmation.
+- The computer listens to the requests and offers between repeaters in its range. They cost nothing extra.
+- It asks again only repeaters on a route, and only when an answer is due: after the announced time of applying, during a trial boot, or every 15 minutes while they load from another repeater.
+
+A repeater also names the repeaters that load from it. That way stations beyond the reach of the computer appear in the web interface as well, see [web.md](web.md).
 
 ### Step by step
 
@@ -100,7 +134,7 @@ The format is described in [protocol.md](protocol.md).
 
 The duration depends on the radio parameters and the number of data packets. The program shows the number of radio packets per package in the dashboard and in `meshcore-ota info`.
 
-Calculated, not measured: at SF8, 62.5 kHz and coding rate 4/5 a full data packet occupies about 1 second of airtime. At 0.5 % a provider may therefore send one roughly every 200 seconds, which is about 18 packets per hour. An update with 50 data packets thus takes just under 3 hours per radio link, one with 150 about 8 hours. Over a route with hops each packet counts for every hop.
+Calculated, not measured: at SF8, 62.5 kHz and coding rate 4/5 a full data packet occupies about 1 second of airtime. At 0.5 % a provider may therefore send one roughly every 200 seconds, which is about 18 packets per hour. An update with 50 data packets thus takes just under 3 hours per radio link, one with 150 about 8 hours. Over a route with hops each packet counts for every hop. On a quiet channel the share rises up to 5 % and the sending time shrinks to about a tenth.
 
 A repeater already passes on finished pages while it is still fetching the rest.
 
@@ -159,6 +193,8 @@ A repeater without a reachable neighbour therefore does not confirm an update an
 ## Limitations
 
 - **Devices without external flash** may be able to apply a large update only without a rollback copy.
+- **No way back by radio.** A repeater only accepts a build with a higher number than its own. The number consists of the build counter after the plus sign and the MeshCore version. A package the operator signed in the past cannot be played back later to install an older firmware. The program does not offer downgrades.
+- **Carried packages are not checked on the way.** A repeater that carries a package for another device type verifies the manifest but not the blocks. A manipulated block is only noticed by the repeater that uses it, which then requests it again.
 - **One update at a time.** As long as a repeater is loading an update, it does not accept another one. If no usable data arrives for eight waiting periods (about 85 minutes at 0.5 % airtime), it accepts another offer. `ota drop` discards the update at once.
 - **Source firmware.** An update can only be built for repeaters whose running firmware is present as a file in the data directory.
 - **Jammers in radio range** can stall a transfer but cannot inject anything false.

@@ -22,8 +22,15 @@ There is no central key. Each operator signs with their own Ed25519 key, and the
 1. `meshcore-ota` builds the repeater firmware from the MeshCore source code and embeds the operator's public key and presets. This firmware is installed on the repeater once, over Bluetooth or USB.
 2. For every later version the program builds the firmware again and computes the difference to the running one. Only this difference is transferred, split into pages of 4 KB. Pages that stay the same cost no airtime.
 3. The computer sends through a companion (USB or Bluetooth, ordinary companion firmware). It reaches repeaters in direct range and up to 2 hops beyond on a fixed route.
-4. Each repeater verifies the signature of the manifest before it accepts any data, and every page against the manifest. It then passes the update on to its neighbours (zero-hop), only on request and with at most 0.5 % airtime.
-5. The new firmware first runs on trial. If it does not confirm itself, the old one runs again after three trial boots.
+4. Each repeater verifies the signature of the manifest before it accepts any data, and every page against the manifest. It then passes the update on to its neighbours (zero-hop), only on request.
+5. Updates use 0.5 % of the airtime and always have the lowest priority. While the channel is quiet the share rises step by step up to 5 %, and it falls back at once when other traffic appears.
+6. The new firmware first runs on trial. If it does not confirm itself, the old one runs again after three trial boots.
+7. Changed presets travel separately as a small signed settings package, from the computer and from repeater to repeater, without a firmware update.
+8. Repeaters with a package store also carry packages for other device types, so a mixed network does not break the chain.
+
+The program shows in the console and in the browser what every repeater is doing, with a map of the stations and of the way the packages take.
+
+![Map with repeaters and the way of a package](docs/images/web-map.png)
 
 Updates go step by step: a repeater only ever receives the next released version after the one it is running.
 
@@ -66,7 +73,7 @@ The file `keys/signing.key` is secret. Whoever has it can install firmware on yo
 
 ### 3. Create presets (menu item 4)
 
-A preset is a named list of MeshCore settings, for example transmit power and advert intervals. The presets are part of the firmware. The first preset in the list applies on every repeater until another one is selected there. If you do not want to prescribe any settings, skip this step.
+A preset is a named list of MeshCore settings, for example transmit power and advert intervals. The presets are built into the firmware, and later changes reach the repeaters by radio. The first preset in the list applies on every repeater until another one is selected there. If you do not want to prescribe any settings, skip this step.
 
 ![Settings and presets](docs/images/settings.png)
 
@@ -106,7 +113,7 @@ The list shows the repeater versions of MeshCore. Only versions marked "yes" are
 
 ### 7. Connect the companion (menu item 6)
 
-The program shows serial ports and companions in Bluetooth range. Select the port and confirm the airtime (default 0.5 %). The MeshCore app must not be connected to the companion at the same time. For Bluetooth, the companion has to be paired with the computer beforehand.
+The program shows serial ports and companions in Bluetooth range. Select the port. The airtime starts at 0.5 % and may rise to the upper limit (default 5 %) while the channel is quiet. The MeshCore app must not be connected to the companion at the same time. For Bluetooth, the companion has to be paired with the computer beforehand.
 
 ### 8. Run the dashboard (menu item 1)
 
@@ -118,9 +125,9 @@ As soon as a repeater has an update completely, it passes it on to its neighbour
 
 After applying, the new firmware runs on trial until a neighbouring repeater or the dashboard answers it. Without an answer it restarts after ten minutes, and after three attempts the previous firmware runs again. Leave the dashboard running until the repeater shows the new build as confirmed. A repeater that has rolled back does not take the same update again until it receives `ota reset`.
 
-At 0.5 % airtime a version step takes several hours per repeater, about nine hours at SF8, 62.5 kHz and CR 4/8. A higher airtime for the companion (menu item 6, up to 5 %) shortens the transfer from the computer.
+At 0.5 % airtime a version step takes several hours per repeater, about nine hours at SF8, 62.5 kHz and CR 4/8. On a quiet channel the computer and the repeaters raise their share up to 5 %, which shortens this to about a tenth. With other traffic on the channel they stay at 0.5 %.
 
-Under menu item 5 (My repeaters) you add repeaters from the companion's contacts. For these the program discovers the route itself if they do not respond.
+Under menu item 5 (My repeaters) you add repeaters from the companion's contacts. For these the program discovers the route itself if they do not respond. The web interface offers the same list with a map, see [docs/web.md](docs/web.md).
 
 ## Folders and files
 
@@ -131,21 +138,21 @@ All data is stored right next to the program: for the prebuilt executable in its
 | `keys/signing.key` | private key, secret |
 | `keys/public.txt` | public key and key ID |
 | `keys/retired-<id>.key`, `keys/retired.json` | retired keys after a key change |
-| `firmware/<device type>-<version>+<revision>.bin` | firmware builds, the basis of all packages. Keep them |
+| `firmware/<device type>-<version>+<build number>.bin` | firmware builds, the basis of all packages. Keep them |
 | `firmware/<device type>.json` | memory layout of the device type |
 | `firmware/keys.json` | which build was built with which key |
 | `packages/` | signed packages (`.mcota`) |
 | `install/` | files for the first installation |
 | `downloads/` | optional: ZIP files from meshcore.io that specify a version |
 | `cache/` | build tool, MeshCore sources, version list, build logs |
-| `settings.json` | presets and their revision |
+| `settings.json` | presets, their revision and the build number |
 | `releases.json` | released versions |
-| `repeaters.json` | your repeaters with the build they last reported |
-| `config.json` | companion port, airtime, test mode |
+| `repeaters.json` | your repeaters with name, position and the build they last reported |
+| `config.json` | companion port, airtime, test mode, web interface |
 | `custom.json` | firmware source and build flags |
 | `sources/` | optional source folders, one per version |
 
-The name of a build consists of the MeshCore version and the revision of the settings, for example `v1.18.0+3`.
+The name of a build consists of the MeshCore version and a build number, for example `v1.18.0+3`. The number rises when the key, the firmware source or the MeshCore-OTA part of the firmware changes.
 
 ## Keys and key change
 
@@ -167,7 +174,7 @@ Keep the previous key until all repeaters have been switched over. Repeaters tha
 
 ## Settings
 
-Presets are lists of MeshCore `set <name> <value>` commands. Every change to a preset or to the key results in a new revision (`v1.18.0+3` becomes `v1.18.0+4`), which is sent out as a small update.
+Presets are lists of MeshCore `set <name> <value>` commands. They are built into the firmware as starting values. Every later change is signed as a settings package of a few radio packets and reaches the repeaters by radio, without a firmware update and without a restart.
 
 On the repeater, over USB or through admin access:
 
@@ -175,10 +182,18 @@ On the repeater, over USB or through admin access:
 | --- | --- |
 | `ota preset` | shows the active preset and the list |
 | `ota preset <name>` | selects a preset and applies it |
-| `ota locksettings on` | the repeater keeps its values even if an update brings new ones |
+| `ota locksettings on` | the repeater keeps its values even if new settings arrive |
 | `ota locksettings off` | removes the lock |
 
 More in [docs/settings.md](docs/settings.md).
+
+## Web interface and service
+
+```
+meshcore-ota web
+```
+
+runs without the console dashboard and serves the state at `http://localhost:8080/`: airtime, the list of your repeaters with path, firmware and progress, and the map. Repeaters and their positions are entered there. Menu item 10 switches the web interface on for the dashboard as well. More in [docs/web.md](docs/web.md), including a systemd unit for a Raspberry Pi.
 
 ## Updating the program
 
@@ -236,7 +251,10 @@ The simulation needs a checkout of MeshCore (for the signature verification from
 - distribution along a chain of repeaters with packet loss and corrupted packets,
 - several neighbours overhearing the same transfer and switching the provider,
 - the switch without a loader as on the ESP32,
-- sending from the computer, directly and over 2 hops, against the device code.
+- sending from the computer, directly and over 2 hops, against the device code,
+- the airtime share following the load on the channel,
+- packages passing through repeaters of another device type, and settings spreading from repeater to repeater,
+- the web interface against an emulated companion.
 
 The same tests run on GitHub on every push to `main` and on every pull request.
 
@@ -247,6 +265,7 @@ The same tests run on GitHub on every push to `main` and on every pull request.
 | [docs/README.md](docs/README.md) | table of contents |
 | [docs/quickstart.md](docs/quickstart.md) | the short way from the download to the first update |
 | [docs/app.md](docs/app.md) | the program: menu, commands, options, data directory |
+| [docs/web.md](docs/web.md) | web interface, map, running as a service |
 | [docs/keys.md](docs/keys.md) | keys, import, key change |
 | [docs/settings.md](docs/settings.md) | settings and presets |
 | [docs/update.md](docs/update.md) | program update, releases, CI |

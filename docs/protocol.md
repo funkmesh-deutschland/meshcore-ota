@@ -107,15 +107,53 @@ A repeater that trusts this key replies with a hello, to a query without a route
 | 1 | state of the update: 0 idle, 1 loading, 2 ready, 3 applied, 4 failed |
 | 1 | state of the loader: 0 idle, 1 swap, 2 trial, 3 confirmed, 4 rollback, 5 rejected |
 | 4 | beginning of the SHA-256 of the firmware the last job installed, zero without a job |
+| 4 | revision of the settings in use |
+| 1 | airtime share in use, in tenths of a per cent |
+| 4 | beginning of the ID of the update being loaded or carried, zero without one |
+| 2 | pages present |
+| 2 | pages of this update |
+| 4 | ID of the provider it is loading from, zero without one |
+| 2 | minutes until the update is applied automatically, 0xFFFF if that is not pending |
+| 1 | flags: bit 0 carries the update for others, bit 1 waits for `ota apply`, bit 2 no rollback copy possible |
+| 1 | number of stored packages it delivers besides, followed by 4 bytes of the ID of each |
+| 1 | number of repeaters loading from it, at most 4, followed by the ID (4) and the number of missing pages (2) of each |
 
-The computer also sends queries while a transfer is running, at most one per ten offer intervals.
+Fields after the state of the loader are missing in hellos of firmware before version 1.1.
+
+A repeater also sends a hello without being asked: when it starts loading an update, when the update is complete, after a restart while the loader reports a state, after the trial boot is confirmed, and when it has finished collecting a package for others. It uses the return route of the last query or routed offer if it has one, otherwise zero-hop.
+
+While a transfer is running the computer sends a query at most once per longest offer interval (one hour).
 
 From this the computer recognises which firmware is running and which package fits. It does not offer an update again that the repeater has rolled back or rejected, and it shows a running trial boot.
+
+## Settings (types 9, 10 and 11)
+
+A settings package carries the presets, signed with the operator's key, see [settings.md](settings.md).
+
+| Length | Contents |
+| --- | --- |
+| 4 | `MCFG` |
+| 1 | format, currently 1 |
+| 3 | reserved, zero |
+| 4 | revision |
+| 8 | ID of the signing key |
+| variable | for each preset: name, zero byte, the commands separated by line feeds, zero byte |
+| 64 | Ed25519 signature over everything before it |
+
+The package has at most 1216 bytes and travels in parts of 152 bytes.
+
+**Note (type 9)**: ID of the sender (4), ID of the key (8), revision (4), length of the package (2). A node sends it after it has taken over a new revision, in reply to a note with a lower revision, and every 6 hours with a random offset. A node that hears its own revision postpones its next note.
+
+**Ask (type 10)**: ID of the asking node (4), ID of the key (8), revision (4), bit mask of the missing parts (4). Sent zero-hop after a note with a higher revision, and again when parts are still missing after a waiting period. After 6 asks without a new part the node drops what it has collected.
+
+**Part (type 11)**: beginning of the key ID (4), revision (4), length of the package (2), number of the part (1), up to 152 bytes. Whoever holds this revision answers an ask with the parts asked for. The computer also sends the parts on a route to a repeater whose hello shows an older revision.
+
+A node takes over a package only if it is complete, the signature matches a key it trusts and the revision is higher than the one in use. The presets built into the firmware count with the revision they were built with.
 
 ## Sequence at the receiver
 
 1. Offer heard, and key, device type and running firmware match: request the manifest.
-2. Manifest complete: verify the signature. Only after that is data accepted.
+2. Manifest complete: verify the signature. The build number in the manifest has to be higher than the one of the running firmware. Only after that is data accepted.
 3. Overhear. Every block heard is applied and checked against the manifest.
 4. If nothing usable arrives for a while, request the missing pages. The waiting time is twice the interval at which a provider may send, plus 5 seconds and a random component.
 5. If 6 requests remain without usable data, give up the provider and look for another one with a seek.
@@ -127,7 +165,19 @@ A receiver follows one update at a time. Two cases let another offer take over:
 
 ## Airtime
 
-Each repeater charges the airtime of all its own MeshCore-OTA packets against a credit that grows with 0.5 % of the elapsed time and is at most 10 seconds. If the credit is not sufficient, the packet waits. The operator's computer keeps the same credit for its companion with the configured share (0.05 to 5 %) and charges a packet over a route additionally for every hop.
+Each repeater charges the airtime of all its own MeshCore-OTA packets against a credit that grows with a share of the elapsed time and is at most 10 seconds. If the credit is not sufficient, the packet waits. The operator's computer keeps the same credit for its companion and charges a packet over a route additionally for every hop.
+
+The share starts at 0.5 % and follows the load on the channel. A node adds up the airtime of everything it receives, in windows of 60 seconds:
+
+- At most 0.3 seconds received in a window (0.5 %): the share doubles, up to 5 %.
+- 1.2 seconds or more received since the window began (2 %): the share falls back to 0.5 % at once, and a saved-up credit above 2 seconds is cut.
+- In between the share stays as it is.
+
+The waiting times of a receiver are always calculated with 0.5 %, whatever the share is at the moment.
+
+A repeater hands a MeshCore-OTA packet to MeshCore only while no other packet is waiting to be sent, and with the lowest priority.
+
+The computer holds back offers, queries and notes while a data packet is waiting for airtime. Each of them gets through once per longest offer interval at most.
 
 ## Manifest
 

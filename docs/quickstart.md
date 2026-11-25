@@ -56,15 +56,18 @@ A repeater always receives the next released version after the one it is running
 
 The dashboard asks over the air which of your repeaters are present. Each one appears with its device type and its build. If a newer released version exists for a repeater, the dashboard builds the firmware, signs the update and sends it on its own.
 
-Leave the dashboard running until the repeater shows the new build as confirmed. At 0.5 % airtime this takes several hours per repeater.
+Leave the dashboard running until the repeater shows the new build as confirmed. At 0.5 % airtime this takes several hours per repeater. While the channel is quiet the airtime rises up to 5 % and it goes correspondingly faster.
 
-A changed preset under menu item 4 is sent the same way and is the quickest way to try out an update.
+A changed preset under menu item 4 is sent as a small settings package within minutes and without a restart of the repeater. That is the quickest way to see the radio link working.
+
+`meshcore-ota web` runs the same without the console dashboard and shows everything in the browser, with a map of your repeaters, see [web.md](web.md).
 
 ## Next
 
 | Topic | File |
 | --- | --- |
 | Menu, commands, dashboard | [app.md](app.md) |
+| Web interface, map, running as a service | [web.md](web.md) |
 | Settings and presets | [settings.md](settings.md) |
 | Keys and key change | [keys.md](keys.md) |
 | Repeaters over hops, how updates spread | [concept.md](concept.md) |

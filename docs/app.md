@@ -41,8 +41,8 @@ meshcore-ota --dir /home/user/meshcore-ota devices
 | `cache/` | PlatformIO environment (`venv/`), MeshCore sources (`sources/`), version list (`versions.json`), device lists, build logs |
 | `settings.json` | presets and their revision |
 | `releases.json` | released versions |
-| `repeaters.json` | your repeaters with name, last reported firmware and time |
-| `config.json` | companion port, airtime, test mode, hops |
+| `repeaters.json` | your repeaters with name, device type, position, last reported firmware and time |
+| `config.json` | companion port, airtime and its upper limit, test mode, hops, web interface |
 | `custom.json` | firmware source and build flags, see [custom.md](custom.md) |
 | `sources/` | optional source folders, one per version, see [custom.md](custom.md) |
 
@@ -75,6 +75,7 @@ Above the menu are the version, the folder, the key ID, the companion port, the 
 | 7 Key | show the key ID, import a private key, see [keys.md](keys.md) |
 | 8 Update program | download a new version from GitHub, see [update.md](update.md) |
 | 9 Custom firmware | firmware source and build flags, see [custom.md](custom.md) |
+| 10 Web interface | port, reach and password of the web interface, see [web.md](web.md) |
 | 0 Quit | |
 
 ### Release versions
@@ -104,7 +105,7 @@ Repeaters that have responded in the dashboard appear in the list automatically.
 
 ### Companion connection
 
-The menu lists serial ports and searches for companions over Bluetooth for a few seconds. The port can also be entered by hand (`COM5`, `/dev/ttyACM0`, `AA:BB:CC:DD:EE:FF`). It then asks for the airtime of the companion in percent (0.05 to 5, default 0.5) and for test mode. The values are stored in `config.json`.
+The menu lists serial ports and searches for companions over Bluetooth for a few seconds. The port can also be entered by hand (`COM5`, `/dev/ttyACM0`, `AA:BB:CC:DD:EE:FF`). It then asks for the airtime of the companion in percent (0.05 to 5, default 0.5), for the upper limit it may rise to on a quiet channel (default 5) and for test mode. The values are stored in `config.json`.
 
 The MeshCore app must not be connected to the companion at the same time. For Bluetooth, the companion has to be paired with the computer once, on Windows in the Bluetooth settings, on Linux for example like this:
 
@@ -123,9 +124,9 @@ bluetoothctl
 | Panel | Contents |
 | --- | --- |
 | Companion | name, ID, radio parameters, transmit power and firmware of the companion |
-| Airtime | the configured limit, the actual share since start, the saved-up airtime credit of at most 10 seconds, and the time until the next packet goes out |
+| Airtime | the share in use and its limits, the actual share since start, the share of the channel used by others, the saved-up airtime credit of at most 10 seconds, and the time until the next packet goes out |
 | Offered updates | per package: device type, source build, target build, changed pages, number of radio packets, apply mode |
-| Repeaters | repeaters that have responded, with build, progress, signal or number of hops and time since the last request |
+| Repeaters | your repeaters and all others that have responded, with build, state, progress, signal or number of hops and time since the last report |
 | Log | the latest events |
 
 For a repeater that is loading, the status shows the progress packet by packet:
@@ -139,13 +140,30 @@ For a repeater that is loading, the status shows the progress packet by packet:
 
 The packet count rises again when a repeater reports packets as lost. The remaining time covers sending only. Checking, applying and the trial boot on the repeater come on top.
 
+After the transfer the status follows what the repeater reports:
+
+| Status | Meaning |
+| --- | --- |
+| `has the update completely, applies it in about 23:00 min` | the update is complete and verified. The repeater waits until no neighbour has loaded from it for a while |
+| `has the update completely and waits for the command ota apply` | the package was built for applying by hand, or no rollback copy is possible |
+| `is swapping the firmware` | the loader is at work |
+| `runs the new firmware on trial and waits for an answer from a neighbour` | trial boot. Keep the program running, it answers the repeater |
+| `is up to date` | the new build is confirmed |
+| `loading from Mast North, 43 of 104 pages` | the repeater gets the update from another repeater |
+| `carries a package for other repeaters, 12 of 104 pages` | the repeater collects a package it does not need itself |
+| `is not reachable, offering ...` | the repeater did not answer. Its update is offered so that others can carry it there |
+
+Below the status the dashboard names the repeater it loads from, the repeaters it serves, and its airtime share.
+
 What the dashboard does:
 
 1. It queries over the air which repeaters with your key are present: all in direct range, and specifically those to which a route is known. Each one reports its device type, the size and checksum of the running firmware and the name of the build.
 2. It learns routes from the adverts the companion has heard and from the stored routes of its contacts. For repeaters from "My repeaters" without a known route it starts a path discovery, one at a time and at least 90 seconds apart, at most once an hour per repeater.
 3. For every reported build it looks for the matching file in `firmware/` and determines the next step.
 4. It builds the firmware for this step if it is missing, creates the package, signs it and offers it.
-5. It only sends what is requested and keeps to the configured airtime.
+5. It only sends what is requested and keeps to the airtime.
+6. It distributes the current presets as a settings package to repeaters with an older revision, see [settings.md](settings.md).
+7. For repeaters from "My repeaters" that have not answered after ten minutes it offers the next update anyway, so that repeaters in range can carry it towards them.
 
 If a repeater reports a firmware that is not present in `firmware/`, the program cannot compute a difference. The repeater then needs the firmware from this folder once (menu item 3).
 
@@ -161,7 +179,11 @@ The program uses hops of 2 or 3 bytes in length only if the companion firmware s
 
 ## Airtime
 
-By default the companion transmits for at most 0.5 % of the time. In the menu (menu item 6) or with `--airtime` this can be set from 0.05 to 5 %. This applies only to the companion at the computer. The repeaters stay fixed at 0.5 %, the test firmware at 5 %.
+The companion starts at 0.5 % of the time. While it hears next to nothing from others it doubles the share every minute up to 5 %, and it falls back to 0.5 % at once when traffic appears. Both limits can be set in the menu (menu item 6) or with `--airtime` and `--airtime-max`, from 0.05 to 5 %. The same value for both keeps the share fixed.
+
+These settings apply to the companion at the computer. The repeaters follow the same rule between 0.5 % and 5 %, the test firmware uses a fixed 5 %. Details are in [concept.md](concept.md).
+
+While a data packet is waiting for airtime, the program holds back its offers, queries and settings notes. Each of them gets through once an hour at most.
 
 ## Subcommands
 
@@ -196,22 +218,27 @@ In the list printed by `devices`, `yes` stands for supported devices and `no` fo
 | `meshcore-ota ports` | lists serial ports and companions over Bluetooth. `--no-ble` skips the Bluetooth search |
 | `meshcore-ota repeaters --serial <port>` | lists the repeaters from the companion's contacts with a known route |
 | `meshcore-ota update --serial <port>` | the same as menu item 1, without the menu |
+| `meshcore-ota web` | like `update`, with plain lines instead of the dashboard and with the web interface on port 8080, see [web.md](web.md). Without a port it uses the companion from `config.json` |
 | `meshcore-ota send --serial <port> <package ...>` | offers finished packages without building |
 | `meshcore-ota status --serial <port> --to <repeater> --password <password>` | logs in to the repeater and queries `ota info` and `ota peers`. A custom command can be appended |
 
 Instead of `--serial <port>` (for example `COM5` or `/dev/ttyACM0`), `--ble AA:BB:CC:DD:EE:FF` works everywhere.
 
-Options for `update` and `send`:
+Options for `update`, `web` and `send`:
 
 | Option | Meaning |
 | --- | --- |
 | `--airtime <percent>` | airtime of the companion, 0.05 to 5. Default 0.5, in test mode 5 |
+| `--airtime-max <percent>` | upper limit the airtime may rise to on a quiet channel, default 5 |
+| `--web [PORT]` | also serve the web interface, default port 8080 |
+| `--listen <address>` | address of the web interface, default `127.0.0.1` |
+| `--web-password <password>` | password for the web interface |
 | `--test` | test mode matching the test firmware: short intervals, 5 % airtime |
 | `--plain` | plain line output instead of the dashboard |
 | `--hops <0, 1 or 2>` | reach repeaters up to this many hops away, default 2. 0 means direct neighbours only |
 | `--route TARGET=HOP,HOP` | route to a repeater by hand, for example `--route 1a2b3c4d=5e`. The target is the beginning of its key (4 bytes), the hops are given as hex in order starting from the companion |
 
-Additional options for `update`:
+Additional options for `update` and `web`:
 
 | Option | Meaning |
 | --- | --- |
@@ -229,6 +256,7 @@ Additional options for `update`:
 | `meshcore-ota pack --key K --old old.bin --new new.bin --board <device type> --version <text> --build <number> --out x.mcota` | creates and signs a package from two firmware files. Options: `--auto-apply`, `--no-rollback`, `--basis <address>` |
 | `meshcore-ota info <package>` | shows the contents of a package. With `--pubkey <hex>` the signature is verified |
 | `meshcore-ota load --port <port> <package>` | loads a package onto a repeater over USB |
+| `meshcore-ota load --port <port> --settings` | loads the current presets onto a repeater over USB as a settings package |
 | `meshcore-ota cli --port <port> <command>` | sends a command to the repeater over USB and shows the reply. `--wait <seconds>` |
 | `meshcore-ota uf2 --out x.uf2 --part address:file` | builds a UF2 file from parts. `--part address:fill=length` fills with blank bytes |
 
@@ -268,7 +296,7 @@ The firmware adds `ota` to the MeshCore command line. The commands work over USB
 | `ota drop` | discard the update. Refused while an update is being applied (loader state `swap` or `trial`) | USB and admin |
 | `ota reset` | clear the loader status. After a rollback the repeater then accepts the same update again. Refused while a swap is in progress | USB and admin, during a trial boot USB only |
 | `ota hash <size>` | SHA-256 of the running firmware over this length | USB and admin |
-| `ota load ...` | load a package over USB (used by `meshcore-ota load`) | USB only |
+| `ota load ...` | load a package or a settings package over USB (used by `meshcore-ota load`) | USB only |
 | `ota confirm` | confirm the trial boot by hand | USB only |
 | `ota ping`, `ota pong` | ping neighbours, query the reply | USB and admin |
 
@@ -277,21 +305,23 @@ On nRF52840, the commands `ota key set`, `ota key clear`, `ota preset <name>`, `
 `ota info` replies, for example:
 
 ```
-OK fw=v1.17.1+2 loading v1.18.0+2 40/93 w=40 old=0 id=0011223344556677 loader=idle from=1a2b3c4d age=12s budget=0.5% tx=31 rx=120 auto ext
+OK fw=v1.17.1+2 loading v1.18.0+2 40/93 w=40 old=0 id=0011223344556677 loader=idle from=1a2b3c4d age=12s budget=0.5% air=2.0% cfg=5 tx=31 rx=120 auto ext
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `fw` | running firmware |
-| `idle`, `manifest`, `loading`, `ready`, `applied`, `failed` | state of the update |
+| `idle`, `manifest`, `loading`, `carrying`, `ready`, `applied`, `failed` | state of the update. `carrying` means the package is collected for other repeaters |
 | after that | build that is being loaded |
 | `40/93` | pages present out of all pages |
 | `w` | pages the repeater can pass on to neighbours |
-| `old` | older packages that the repeater additionally keeps and delivers to stragglers |
+| `old` | further packages that the repeater keeps and delivers: older ones for stragglers and carried ones for other device types |
 | `id` | ID of the update |
 | `loader` | `idle`, `swap`, `trial`, `confirmed`, `rollback`, `rejected` |
 | `from`, `age` | provider it is loading from, and seconds since the last usable data |
-| `budget` | airtime share |
+| `budget` | lower limit of the airtime share |
+| `air` | airtime share in use right now, by the load on the channel |
+| `cfg` | revision of the settings in use |
 | `tx`, `rx` | MeshCore-OTA packets sent and received |
 | `auto` | applies on its own |
 | `no-rollback` | no rollback copy can be created for this update |
