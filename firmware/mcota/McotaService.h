@@ -11,6 +11,9 @@ public:
   virtual void mcotaReboot() = 0;
   virtual void mcotaProbe() = 0;
   virtual void mcotaCommand(char *command, char *reply) = 0;
+  virtual uint32_t mcotaTraffic() = 0;
+  virtual uint32_t mcotaLoad(uint8_t *out, uint32_t max) = 0;
+  virtual bool mcotaSave(const uint8_t *data, uint32_t len) = 0;
 };
 
 class McotaService {

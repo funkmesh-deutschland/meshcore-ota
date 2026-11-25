@@ -42,7 +42,7 @@ index 61b6c149..91404f77 100644
  #ifdef WITH_BRIDGE
    bridge.loop();
  #endif
-@@ -1338,3 +1350,54 @@ bool MyMesh::hasPendingWork() const {
+@@ -1338,3 +1350,86 @@ bool MyMesh::hasPendingWork() const {
  #endif
 +#ifdef MCOTA_ENABLED
 +  if (mcota_service.pending()) return true;
@@ -52,6 +52,7 @@ index 61b6c149..91404f77 100644
 +
 +#ifdef MCOTA_ENABLED
 +bool MyMesh::mcotaSend(const uint8_t* data, uint32_t len, const uint8_t* path, uint8_t hop_size, uint8_t hops) {
++  if (_mgr->getOutboundTotal() > 0) return false;
 +  mesh::Packet* pkt = createRawData(data, len);
 +  if (pkt == NULL) return false;
 +  pkt->header &= ~PH_ROUTE_MASK;
@@ -62,7 +63,7 @@ index 61b6c149..91404f77 100644
 +    memcpy(pkt->path, path, (size_t)hop_size * hops);
 +  }
 +  getTables()->markSeen(pkt);
-+  sendPacket(pkt, 8, 0);
++  sendPacket(pkt, 100, 0);
 +  return true;
 +}
 +
@@ -91,6 +92,37 @@ index 61b6c149..91404f77 100644
 +
 +void MyMesh::mcotaCommand(char* command, char* reply) {
 +  handleCommand(0, command, reply);
++}
++
++uint32_t MyMesh::mcotaTraffic() {
++  return (uint32_t)getReceiveAirTime();
++}
++
++uint32_t MyMesh::mcotaLoad(uint8_t* out, uint32_t max) {
++#if defined(RP2040_PLATFORM)
++  File file = _fs->open("/mcota_cfg", "r");
++#else
++  File file = _fs->open("/mcota_cfg");
++#endif
++  if (!file) return 0;
++  int got = file.read(out, max);
++  file.close();
++  return got > 0 ? (uint32_t)got : 0;
++}
++
++bool MyMesh::mcotaSave(const uint8_t* data, uint32_t len) {
++#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
++  _fs->remove("/mcota_cfg");
++  File file = _fs->open("/mcota_cfg", FILE_O_WRITE);
++#elif defined(RP2040_PLATFORM)
++  File file = _fs->open("/mcota_cfg", "w");
++#else
++  File file = _fs->open("/mcota_cfg", "w", true);
++#endif
++  if (!file) return false;
++  bool ok = file.write(data, len) == len;
++  file.close();
++  return ok;
 +}
 +
 +void MyMesh::onRawDataRecv(mesh::Packet* packet) {
@@ -124,7 +156,7 @@ index dc893258..3d3245ab 100644
    FILESYSTEM* _fs;
    uint32_t last_millis;
    uint64_t uptime_millis;
-@@ -229,6 +236,17 @@ public:
+@@ -229,6 +236,20 @@ public:
    void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
    void loop();
  
@@ -136,6 +168,9 @@ index dc893258..3d3245ab 100644
 +  void mcotaReboot() override;
 +  void mcotaProbe() override;
 +  void mcotaCommand(char* command, char* reply) override;
++  uint32_t mcotaTraffic() override;
++  uint32_t mcotaLoad(uint8_t* out, uint32_t max) override;
++  bool mcotaSave(const uint8_t* data, uint32_t len) override;
 +  void onRawDataRecv(mesh::Packet* packet) override;
 +#endif
 +
