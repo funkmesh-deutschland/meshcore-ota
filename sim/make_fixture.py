@@ -32,6 +32,13 @@ for name, seed in (("good", 1), ("other", 2)):
         manifest, blocks = mcota.make_package(old, new, key, "sim_board", "1.0.1", 2, auto_apply=True)
         mcota.write_package(os.path.join(out, "auto.mcota"), manifest, blocks)
         print("Patch", sum(len(b) for b in blocks), "bytes for", len(new), "bytes of firmware,", len(blocks), "pages")
+key = Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32)
+small = [("standard", ["set tx 20", "set advert.interval 120"]), ("dense", ["set tx 14", "set flood.max 8"])]
+large = small + [("field%d" % i, ["set advert.interval %d" % (100 + i), "set flood.advert.interval %d" % (12 + i), "set txdelay 1.%d" % i]) for i in range(6)]
+open(os.path.join(out, "settings.bin"), "wb").write(mcota.make_settings(key, 5, small))
+open(os.path.join(out, "settings2.bin"), "wb").write(mcota.make_settings(key, 6, large))
+open(os.path.join(out, "settings-other.bin"), "wb").write(mcota.make_settings(Ed25519PrivateKey.from_private_bytes(bytes([2]) * 32), 9, small))
+assert mcota.read_settings(mcota.make_settings(key, 6, large)) == (6, mcota.key_id(mcota.public_bytes(key)), large)
 newer = bytearray(new)
 for _ in range(25):
     pos = rng.randrange(8000, len(newer) - 64)

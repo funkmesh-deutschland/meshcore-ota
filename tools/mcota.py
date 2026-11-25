@@ -521,6 +521,27 @@ def make_package(old, new, private, board, version, build, auto_apply=False, no_
     return manifest, blocks
 
 
+SETTINGS_MAGIC = b"MCFG"
+SETTINGS_MAX = 8 * 152
+
+
+def make_settings(private, revision, presets):
+    body = b"".join(name.encode() + b"\0" + "\n".join(commands).encode() + b"\0" for name, commands in presets)
+    head = SETTINGS_MAGIC + bytes([1, 0, 0, 0]) + struct.pack("<I", revision) + key_id(public_bytes(private)) + body
+    blob = head + private.sign(head)
+    if len(blob) > SETTINGS_MAX:
+        raise SystemExit(f"The presets need {len(blob)} bytes, a settings package holds at most {SETTINGS_MAX}. Shorten the presets or remove one.")
+    return blob
+
+
+def read_settings(blob):
+    if len(blob) < 84 or blob[:4] != SETTINGS_MAGIC or blob[4] != 1:
+        raise SystemExit("This is not a settings package.")
+    parts = blob[20:-64].split(b"\0")
+    presets = [(parts[i].decode(), parts[i + 1].decode().split("\n") if parts[i + 1] else []) for i in range(0, len(parts) - 1, 2)]
+    return struct.unpack("<I", blob[8:12])[0], blob[12:20], presets
+
+
 def manifest_lens(manifest):
     pages = struct.unpack("<H", manifest[6:8])[0]
     size = (pages + 7) // 8

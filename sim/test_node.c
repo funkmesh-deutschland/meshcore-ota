@@ -23,6 +23,10 @@ typedef struct {
   mcota_config_t cfg;
   int index;
   int off;
+  uint32_t heard_ms;
+  uint8_t saved[MCOTA_SETTINGS_MAX];
+  uint32_t saved_len;
+  long sent;
 } sim_t;
 
 static sim_t sims[NODES];
@@ -89,11 +93,25 @@ static bool h_verify(void *ctx, const uint8_t *pub, const uint8_t *sig, const ui
   (void)ctx;
   return ed25519_verify(sig, msg, len, pub) == 1;
 }
+static uint32_t h_traffic(void *ctx) { return ((sim_t *)ctx)->heard_ms; }
+static uint32_t h_load(void *ctx, uint8_t *out, uint32_t max) {
+  sim_t *s = (sim_t *)ctx;
+  if (s->saved_len > max) return 0;
+  memcpy(out, s->saved, s->saved_len);
+  return s->saved_len;
+}
+static bool h_save(void *ctx, const uint8_t *data, uint32_t len) {
+  sim_t *s = (sim_t *)ctx;
+  memcpy(s->saved, data, len);
+  s->saved_len = len;
+  return true;
+}
 static bool h_send(void *ctx, const uint8_t *data, uint32_t len, const mcota_route_t *route) {
   sim_t *from = (sim_t *)ctx;
   int i;
   (void)route;
   if (from->off) return true;
+  from->sent++;
   for (i = 0; i < NODES; i++) {
     uint8_t copy[256];
     if (!link_up[from->index][i] || sims[i].off) continue;
@@ -102,6 +120,7 @@ static bool h_send(void *ctx, const uint8_t *data, uint32_t len, const mcota_rou
     if ((int)(rnd() % 100u) < corrupt_percent && len > 21u) { copy[20u + rnd() % (len - 20u)] ^= (uint8_t)(1u + rnd() % 255u); corrupted++; }
     if (duplicate(i, copy, len)) { dropped++; continue; }
     delivered++;
+    sims[i].heard_ms += h_airtime(0, len);
     mcota_node_receive(&sims[i].node, copy, len);
   }
   return true;
@@ -171,6 +190,7 @@ static void setup(int i, const uint8_t *image, size_t image_len, const uint8_t *
 }
 
 static void connect(int a, int b) { link_up[a][b] = link_up[b][a] = 1; }
+static void restart(int i) { mcota_node_init(&sims[i].node, &sims[i].cfg); }
 
 static void run(uint32_t ms) {
   uint32_t end = now_ms + ms;
@@ -583,6 +603,146 @@ int main(int argc, char **argv) {
     check(sims[1].node.has_manifest && memcmp(sims[1].node.campaign, sims[2].node.campaign, 8) == 0, "an unanswered offer blocks a real one");
     pkg = keep;
     manifest_len = keep_len;
+  }
+
+  {
+    size_t other_len, own_len, s1_len, s2_len, s3_len;
+    uint8_t *switch_pkg = load(dir, "switch.mcota", &other_len), *own_pkg = load(dir, "update2.mcota", &own_len), *keep = pkg;
+    uint8_t *s1 = load(dir, "settings.bin", &s1_len), *s2 = load(dir, "settings2.bin", &s2_len), *s3 = load(dir, "settings-other.bin", &s3_len);
+    uint32_t keep_len = manifest_len, fixed_ms, quick_ms, t0;
+    mcota_manifest_t m;
+    const char *name = 0, *commands = 0;
+    compact = 0;
+    with_ext = 0;
+    loss_percent = 0;
+    corrupt_percent = 0;
+    mcota_manifest_parse(pkg + 2, manifest_len, &m);
+
+    for (k = 0; k < NODES; k++) setup(k, old_img, old_len, good, "sim_board", MAX_PAGES);
+    sims[1].cfg.build = m.build;
+    restart(1);
+    check(!mcota_node_seed_manifest(&sims[1].node, pkg + 2, manifest_len), "an update with the build number of the running firmware is accepted");
+    sims[1].cfg.build = m.build + 1u;
+    restart(1);
+    check(!mcota_node_seed_manifest(&sims[1].node, pkg + 2, manifest_len), "an update with a lower build number is accepted");
+    sims[1].cfg.build = m.build - 1u;
+    restart(1);
+    check(mcota_node_seed_manifest(&sims[1].node, pkg + 2, manifest_len), "an update with a higher build number is rejected");
+
+    for (k = 0; k < NODES; k++) setup(k, old_img, old_len, good, "sim_board", MAX_PAGES);
+    sims[0].cfg.budget_ppm = 5000u;
+    sims[0].cfg.budget_max_ppm = 50000u;
+    sims[0].cfg.traffic_ms = h_traffic;
+    restart(0);
+    check(sims[0].node.level_ppm == 5000u, "airtime does not start at the base share");
+    run(5u * 60u * 1000u);
+    check(sims[0].node.level_ppm == 50000u, "airtime does not rise on a quiet channel");
+    sims[0].heard_ms += 1500u;
+    run(1000u);
+    check(sims[0].node.level_ppm == 5000u && sims[0].node.budget_us <= 2000000u, "airtime does not fall back at once when traffic appears");
+    for (k = 0; k < 10; k++) { sims[0].heard_ms += 500u; run(30u * 1000u); }
+    check(sims[0].node.level_ppm == 5000u, "airtime rises although the channel is in use");
+    run(121u * 1000u);
+    check(sims[0].node.level_ppm >= 10000u && sims[0].node.level_ppm <= 20000u, "airtime does not rise step by step after traffic ends");
+    run(4u * 60u * 1000u);
+    check(sims[0].node.level_ppm == 50000u, "airtime does not return to the upper limit");
+
+    for (i = 0; i < 2u; i++) {
+      for (k = 0; k < NODES; k++) setup(k, old_img, old_len, good, "sim_board", MAX_PAGES);
+      for (k = 0; k < 2; k++) {
+        sims[k].cfg.budget_ppm = 5000u;
+        if (i == 1u) { sims[k].cfg.budget_max_ppm = 50000u; sims[k].cfg.traffic_ms = h_traffic; }
+        restart(k);
+      }
+      seed_all(0);
+      connect(0, 1);
+      t0 = now_ms;
+      wait_complete(1, 2000);
+      check(sims[1].node.state == MCOTA_NODE_COMPLETE, i ? "transfer with load control does not finish" : "transfer at the base share does not finish");
+      if (i == 0u) fixed_ms = now_ms - t0; else quick_ms = now_ms - t0;
+    }
+    check(quick_ms * 2u < fixed_ms, "a quiet channel does not speed up the transfer");
+    printf("load control: %u min at 0.5 %%, %u min with up to 5 %% on a quiet channel\n", (unsigned)(fixed_ms / 60000u), (unsigned)(quick_ms / 60000u));
+
+    with_ext = 1;
+    setup(0, old_img, old_len, good, "sim_board", MAX_PAGES);
+    setup(1, old_img, old_len, good, "other_board", MAX_PAGES);
+    setup(2, old_img, old_len, good, "sim_board", MAX_PAGES);
+    setup(3, old_img, old_len, good, "other_board", MAX_PAGES);
+    for (k = 4; k < NODES; k++) setup(k, old_img, old_len, good, "sim_board", MAX_PAGES);
+    seed_all(0);
+    connect(0, 3);
+    run(30u * 60u * 1000u);
+    check(!sims[3].node.has_manifest && !sims[3].node.cand_active && mcota_node_archives(&sims[3].node) == 0u, "a repeater of another type takes a package although carrying is off");
+    sims[1].cfg.carry = true;
+    restart(1);
+    connect(0, 1);
+    connect(1, 2);
+    for (k = 0; k < 600 && sims[2].node.state != MCOTA_NODE_COMPLETE; k++) run(60u * 1000u);
+    check(sims[2].node.state == MCOTA_NODE_COMPLETE && slot_b_is(2, new_img, new_len), "a package does not get through a repeater of another type");
+    check(mcota_node_archives(&sims[1].node) == 1u && !sims[1].node.has_manifest && sims[1].node.state == MCOTA_NODE_IDLE, "the carrier does not keep the package as a stored one");
+    for (i = 0; i < MAX_PAGES * MCOTA_PAGE_SIZE && sims[1].mem[sims[1].cfg.layout.slot_b + i] == 0xFFu; i++) { }
+    check(i == MAX_PAGES * MCOTA_PAGE_SIZE, "the carrier writes a foreign package into its own firmware area");
+    check(!mcota_node_apply(&sims[1].node), "the carrier applies a foreign package");
+    printf("carrier: package passed through a repeater of another type after %d min\n", k);
+
+    setup(0, old_img, old_len, good, "sim_board", MAX_PAGES);
+    setup(1, new_img, new_len, good, "sim_board", MAX_PAGES);
+    setup(3, new_img, new_len, good, "sim_board", MAX_PAGES);
+    sims[1].cfg.carry = true;
+    restart(1);
+    pkg = switch_pkg;
+    manifest_len = (uint32_t)pkg[0] | ((uint32_t)pkg[1] << 8);
+    seed_all(0);
+    pkg = own_pkg;
+    manifest_len = (uint32_t)pkg[0] | ((uint32_t)pkg[1] << 8);
+    seed_all(3);
+    connect(0, 1);
+    for (k = 0; k < 120 && !(sims[1].node.has_manifest && sims[1].node.foreign && sims[1].node.have > 0u); k++) run(10u * 1000u);
+    check(sims[1].node.has_manifest && sims[1].node.foreign, "a repeater does not carry a package for another source firmware");
+    connect(3, 1);
+    for (k = 0; k < 60 && !(sims[1].node.has_manifest && !sims[1].node.foreign && memcmp(sims[1].node.campaign, sims[3].node.campaign, 8) == 0); k++) run(10u * 1000u);
+    check(sims[1].node.has_manifest && !sims[1].node.foreign && memcmp(sims[1].node.campaign, sims[3].node.campaign, 8) == 0, "an own update does not take precedence over a carried package");
+    wait_complete(1, 600);
+    check(sims[1].node.state == MCOTA_NODE_COMPLETE, "the own update does not finish after carrying was interrupted");
+    pkg = keep;
+    manifest_len = keep_len;
+
+    with_ext = 0;
+    loss_percent = 20;
+    for (k = 0; k < NODES; k++) {
+      setup(k, old_img, old_len, good, "sim_board", MAX_PAGES);
+      sims[k].cfg.settings_load = h_load;
+      sims[k].cfg.settings_save = h_save;
+      sims[k].cfg.settings_note_ms = 20u * 60u * 1000u;
+      restart(k);
+    }
+    connect(0, 1);
+    connect(1, 2);
+    check(mcota_settings_count(s1, (uint32_t)s1_len) == 2u && mcota_settings_entry(s1, (uint32_t)s1_len, 1u, &name, &commands)
+          && strcmp(name, "dense") == 0 && strcmp(commands, "set tx 14\nset flood.max 8") == 0, "presets of a settings package are not read");
+    check(!mcota_node_settings_take(&sims[0].node, s3, (uint32_t)s3_len), "settings signed with a foreign key are accepted");
+    check(mcota_node_settings_take(&sims[0].node, s1, (uint32_t)s1_len) && mcota_node_settings_new(&sims[0].node) && !mcota_node_settings_new(&sims[0].node), "valid settings are rejected");
+    for (k = 0; k < 120 && sims[2].node.settings_rev != 5u; k++) run(10u * 1000u);
+    check(sims[1].node.settings_rev == 5u && sims[2].node.settings_rev == 5u && sims[2].saved_len == s1_len && memcmp(sims[2].saved, s1, s1_len) == 0,
+          "settings do not spread from repeater to repeater");
+    check(mcota_node_settings_new(&sims[2].node), "new settings are not reported to the firmware");
+    printf("settings: %u bytes reached the second hop after %d s with %ld packets\n", (unsigned)s1_len, k * 10, sims[0].sent + sims[1].sent + sims[2].sent);
+    check(mcota_node_settings_take(&sims[0].node, s2, (uint32_t)s2_len), "newer settings are rejected");
+    check(!mcota_node_settings_take(&sims[0].node, s1, (uint32_t)s1_len), "older settings replace newer ones");
+    for (k = 0; k < 360 && sims[2].node.settings_rev != 6u; k++) run(10u * 1000u);
+    check(sims[2].node.settings_rev == 6u && sims[2].saved_len == s2_len && memcmp(sims[2].saved, s2, s2_len) == 0, "settings in several packets do not arrive");
+    restart(2);
+    check(sims[2].node.settings_rev == 6u && sims[2].node.settings_len == s2_len, "settings are lost after a restart");
+    sims[4].cfg.settings_base = 7u;
+    restart(4);
+    connect(2, 3);
+    connect(2, 4);
+    for (k = 0; k < 400 && sims[3].node.settings_rev != 6u; k++) run(10u * 1000u);
+    check(sims[3].node.settings_rev == 6u, "a repeater that joins later does not get the settings");
+    check(sims[4].node.settings_rev == 7u && sims[4].node.settings_len == 0u, "settings older than the built-in ones are taken");
+    loss_percent = 0;
+    with_ext = 0;
   }
 
   if (failures) {
