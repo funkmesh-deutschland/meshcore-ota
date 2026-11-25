@@ -46,6 +46,13 @@ class Budget:
         self.window_at = self.at
         self.busy_ms = 0.0
         self.heard_ms = 0.0
+        self.claimed_at = None
+
+    def claim(self):
+        self.claimed_at = self.now()
+
+    def claimed(self):
+        return self.claimed_at is not None and self.now() - self.claimed_at < 2.0
 
     def _fill(self):
         now = self.now()
@@ -71,10 +78,10 @@ class Budget:
         self.window_at = self.now()
         self.busy_ms = 0.0
 
-    def take(self, cost):
+    def take(self, cost, spare=False):
         self.adapt()
         self._fill()
-        if cost > self.ms:
+        if cost > self.ms or (spare and self.claimed()):
             return False
         self.ms -= cost
         return True
@@ -156,6 +163,7 @@ class Settings:
         self.sequence = int(rng() * 256) & 0xFF
         self.sent = 0
         self.sent_ms = 0.0
+        self.sent_at = now() - most
         self.asks = 0
 
     def receive(self, payload):
@@ -198,8 +206,9 @@ class Settings:
             return None
         hops = len(path) // hop_size
         cost = self.airtime_ms(len(packet) + 2 + len(path)) * (hops + 1)
-        if not self.budget.take(cost):
+        if not self.budget.take(cost, self.now() - self.sent_at < self.most):
             return None
+        self.sent_at = self.now()
         self.sequence += 1
         self.sent += 1
         self.sent_ms += cost
@@ -273,7 +282,7 @@ class Finder:
 
     def _take(self, packet, hops):
         cost = self.airtime_ms(len(packet) + 2 + hops * 3) * (hops + 1)
-        if not self.budget.take(cost):
+        if not self.budget.take(cost, packet[2] == MSG_QUERY and self.quiet() < self.most):
             return False
         if packet[2] == MSG_QUERY:
             self.asked_at = self.now()
@@ -378,6 +387,7 @@ class Provider:
         self.last_path = b""
         self.interval = offer_min
         self.offer_at = now() + (2.0 if self.hops else offer_min * (0.5 + 0.5 * rng()))
+        self.offered_at = now() - offer_max
         self.repairs = []
         self.wants = {}
         self.answer_pings = True
@@ -477,7 +487,8 @@ class Provider:
     def _next_packet(self):
         if self.pongs:
             return self._packet(MSG_PONG, self.pongs[0]), ("pong",)
-        if self.now() >= self.offer_at:
+        loading = bool(self.repairs or any(self.wants.values()))
+        if self.now() >= self.offer_at and (not loading or (not self.hops and self.now() - self.offered_at >= self.offer_max)):
             return self._packet(MSG_OFFER, self.offer_body), ("offer",)
         if not self.repairs:
             page = self._next_page()
@@ -554,6 +565,8 @@ class Provider:
         if not self.budget.take(cost):
             self.sequence -= 1
             self.waiting = cost
+            if what[0] in ("bundle", "chunk"):
+                self.budget.claim()
             return None
         self.waiting = 0.0
         self.sent += 1
@@ -562,6 +575,7 @@ class Provider:
         if what[0] == "pong":
             self.pongs.pop(0)
         elif what[0] == "offer":
+            self.offered_at = self.now()
             self.interval = min(self.offer_max, self.interval * 2)
             self.offer_at = self.now() + self.interval * (0.5 + 0.5 * self.rng())
         elif what[0] == "bundle":

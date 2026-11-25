@@ -174,16 +174,51 @@ def while_busy():
     clock[0] = provider.offer_at + 1.0
     second = provider.poll()
     third = provider.poll()
+    clock[0] = provider.offer_at + 1.0
+    soon = provider.poll()
+    clock[0] = provider.offered_at + 121.0
+    late = provider.poll()
     finder = Finder(bytes.fromhex("a1b2c3d4"), bytes(8), lambda n: 1.0, Budget(50000, lambda: clock[0]), first=0.0, now=lambda: clock[0], rng=random.Random(5).random)
     clock[0] += 500.0
     before = finder.quiet()
     asked = finder.poll()
-    return (first and first[2], second and second[2], third and third[2], provider.busy()), (before, asked and asked[0][2], finder.quiet())
+    return (first and first[2], second and second[2], third and third[2], soon and soon[2], late and late[2], provider.busy()), (before, asked and asked[0][2], finder.quiet())
 
 
 order, quiet = while_busy()
-check(order == (3, 1, 3, True), f"offer is not repeated while data is waiting: {order}")
-check(quiet[0] >= 500.0 and quiet[1] == 7 and quiet[2] == 0.0, f"time since the last query is not tracked: {quiet}")
+check(order == (3, 1, 3, 3, 1, True), f"offers during a transfer are not limited to one per longest interval: {order}")
+check(quiet[0] >= 499.0 and quiet[1] == 7 and quiet[2] == 0.0, f"time since the last query is not tracked: {quiet}")
+
+
+def data_first():
+    clock = [1000.0]
+    budget = Budget(50000, lambda: clock[0])
+    provider = Provider(manifest, blocks, bytes.fromhex("a1b2c3d4"), lambda n: 2000.0, offer_min=10.0, offer_max=120.0, budget=budget,
+                        now=lambda: clock[0], rng=random.Random(4).random, target=bytes.fromhex("77010203"), hops=[bytes.fromhex("aabb")])
+    finder = Finder(bytes.fromhex("a1b2c3d4"), bytes(8), lambda n: 100.0, budget, first=0.0, least=5.0, most=120.0, now=lambda: clock[0], rng=random.Random(5).random)
+    finder.asked_at = clock[0]
+    provider.wants[bytes.fromhex("77010203")] = {page for page in range(provider.pages) if blocks[page]}
+    provider.offer_at = 0.0
+    kinds = []
+    for step in range(4000):
+        clock[0] += 0.1
+        packet = provider.poll()
+        if packet is None and not kinds:
+            asked = finder.poll()
+            if asked:
+                kinds.append(7)
+        elif packet is not None:
+            kinds.append(packet[2])
+            break
+    waited = finder.poll() is None
+    clock[0] += 121.0
+    provider.poll()
+    return kinds, waited, finder.poll() is not None
+
+
+kinds, waited, overdue = data_first()
+check(kinds == [3] and waited, f"a query takes the airtime a waiting data packet needs: {kinds}")
+check(overdue, "a query never gets through during a transfer")
 
 
 def progress():

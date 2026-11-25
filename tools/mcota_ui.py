@@ -96,6 +96,10 @@ def board_of(manifest):
     return manifest[20:36].split(b"\0")[0].decode(errors="replace")
 
 
+STATES = {"loading": "loading", "carrying": "carrying a package for others", "waiting": "waiting", "complete": "has the update completely", "applying": "applying",
+          "trial": "on trial", "up_to_date": "up to date", "rolled_back": "rolled back", "rejected": "rejected", "unreachable": "not reachable", "unknown": "no report yet"}
+
+
 class Dashboard:
     def __init__(self, ppm, test):
         self.ppm = ppm
@@ -106,6 +110,7 @@ class Dashboard:
         self.started = time.monotonic()
         self.companion = None
         self.providers = []
+        self.state = None
         self.target = None
         self.live = Live(self.render(), console=console, screen=True, refresh_per_second=4, transient=False)
 
@@ -186,14 +191,19 @@ class Dashboard:
         grid.add_column(style=SOFT)
         grid.add_column()
         limit = self.ppm / 10000
-        grid.add_row("Allowed", Text(f"send at most {limit:g} % of the time" + (" (test mode)" if self.test else ""), style=f"bold {TEAL}"))
+        air = (self.state or {}).get("airtime")
+        if air and air["max"] > air["base"]:
+            grid.add_row("Allowed", Text(f"{air['now']:g} % now, between {air['base']:g} % and {air['max']:g} % by channel load", style=f"bold {TEAL}"))
+            limit = air["max"]
+        else:
+            grid.add_row("Allowed", Text(f"send at most {limit:g} % of the time" + (" (test mode)" if self.test else ""), style=f"bold {TEAL}"))
         if self.providers or (self.companion and getattr(self.companion, "finder", None)):
             budget = self.providers[0].budget if self.providers else self.companion.finder.budget
             sent = sum(p.sent for p in self.providers)
             sent_ms = sum(p.sent_ms for p in self.providers)
             elapsed = max(time.monotonic() - self.started, 1.0)
             used = sent_ms / 10.0 / elapsed
-            grid.add_row("Actual", Text(f"{used:.2f} % since start", style=TEAL if used <= limit * 1.05 else ORANGE))
+            grid.add_row("Actual", Text(f"{used:.2f} % since start" + (f", channel {air['heard']:.2f} % in use by others" if air else ""), style=TEAL if used <= limit * 1.05 else ORANGE))
             grid.add_row("Budget", Text(f"{budget.ms / 1000:.1f} s saved of at most 10 s", style=DARK))
             grid.add_row("", bar(budget.ms, 10000.0, 30))
             grid.add_row("Sent", f"{sent} packets · {sent_ms / 1000:.0f} s airtime")
@@ -224,58 +234,55 @@ class Dashboard:
         return panel(grid, "Offered updates")
 
     def peers_panel(self):
-        grid = table("Repeaters", [("Repeater", {"style": "bold"}), ("loading", {}), ("Status", {"ratio": 1}),
-                                  ("Signal", {"justify": "right"}), ("last request", {"justify": "right", "style": SOFT})])
+        grid = table("Repeaters", [("Repeater", {"style": "bold"}), ("Firmware", {}), ("Status", {"ratio": 1}),
+                                  ("Signal", {"justify": "right"}), ("last heard", {"justify": "right", "style": SOFT})])
+        colors = {"up_to_date": TEAL, "loading": BASE, "carrying": ORANGE, "rolled_back": RED, "rejected": RED, "unreachable": SOFT, "unknown": SOFT}
         rows = 0
-        loading = self.current()
-        finder = getattr(self.companion, "finder", None) if self.companion else None
-        for key, hello in sorted(finder.seen.items()) if finder else []:
-            if key in loading:
+        for entry in (self.state or {}).get("repeaters", []):
+            if entry["state"] in ("hop", "relay") or (entry["state"] == "unknown" and not entry["text"] and not entry["mine"]):
                 continue
-            label = f"{self.name(key)} ({key})" if self.name(key) else key
-            state = self.companion.states.get(key, "")
-            rssi = hello.get("rssi")
-            signal = Text(f"{hello['hops']} hops" if hello.get("hops", 0) > 1 else "1 hop", style=SOFT) if hello.get("hops") else (Text(f"{rssi} dBm", style=TEAL if rssi is not None and rssi > -100 else ORANGE) if rssi is not None else Text(""))
-            grid.add_row(label, hello["tag"] or "?", Text(state, style=TEAL if state.startswith("is up to date") else ORANGE), signal, age(finder.now() - hello["at"]))
-            rows += 1
-        for key, (provider, peer) in sorted(loading.items()):
-            label = f"{self.name(key)} ({key})" if self.name(key) else key
-            stage, done, total = self.progress(provider, key, peer)
-            upcoming = self.next_packet(provider)
-            detail = None
-            if stage == "manifest":
-                status = Text(f"manifest, packet {done} of {total} sent", style=ORANGE)
-                upcoming = Text(upcoming, style=TEAL) if upcoming else Text("waiting for the repeater", style=SOFT)
-            else:
-                sent, packets, left = self.packets(provider, key)
-                now = provider.current()
-                if left == 0:
-                    status = Text(f"all {packets} packets sent, {total} changed pages" if packets != 1 else "the one packet sent", style=f"bold {TEAL}")
-                    upcoming = Text("waiting for the repeater", style=SOFT)
-                else:
-                    status = Text(f"{sent} of {packets} packets sent ({100 * sent // max(packets, 1)} %), {left} to go")
-                    if now and now[0] == 1 and now[3] > 1:
-                        detail = Text(f"page {min(done + 1, total)} of {total}: packet {now[2]} of {now[3]} sent", style=SOFT)
-                    else:
-                        detail = Text(f"{done} of {total} changed pages sent", style=SOFT)
-                    upcoming = Text(upcoming or "next packet now", style=TEAL)
-                    upcoming.append(f", about {span(provider.time_left(bytes.fromhex(key)))} left", style=SOFT)
-                done, total = sent, packets
+            label = f"{entry['name']} ({entry['id']})" if entry["name"] else entry["id"]
+            moving = entry["progress"]
             cell = Table.grid(expand=True)
             cell.add_column(ratio=1)
-            cell.add_row(status)
-            cell.add_row(bar(done, total, None, ORANGE if stage == "manifest" else TEAL))
-            for line in (detail, upcoming):
-                if line:
+            cell.add_row(Text(entry["text"] or STATES.get(entry["state"], ""), style=colors.get(entry["state"], ORANGE)))
+            if moving and moving["total"]:
+                cell.add_row(bar(moving["done"], moving["total"], None, ORANGE if entry["state"] == "carrying" else TEAL))
+                if moving["detail"]:
+                    cell.add_row(Text(moving["detail"], style=SOFT))
+                if moving["next_s"] is not None or moving["left_s"]:
+                    line = Text("" if moving["next_s"] is None else "next packet now" if moving["next_s"] < 1.0 else f"next packet in {span(moving['next_s'])}", style=TEAL)
+                    if moving["left_s"]:
+                        line.append(("" if moving["next_s"] is None else ", ") + f"about {span(moving['left_s'])} left", style=SOFT)
                     cell.add_row(line)
-            status = cell
-            rssi = peer.get("rssi")
-            signal = Text(f"{len(provider.hops)} hop" + ("s" if len(provider.hops) > 1 else ""), style=SOFT) if provider.hops else (Text(f"{rssi} dBm", style=TEAL if rssi is not None and rssi > -100 else ORANGE) if rssi is not None else Text(""))
-            grid.add_row(label, version_of(provider.manifest), status, signal, age(provider.now() - peer["at"]))
+            extra = []
+            if entry["from"] and self.state["companion"] and entry["from"] != self.state["companion"]["id"]:
+                extra.append("loads from " + self.name_of(entry["from"]))
+            if entry["peers"]:
+                extra.append("serves " + ", ".join(self.name_of(peer["id"]) for peer in entry["peers"]))
+            if entry["stored"]:
+                extra.append(f"keeps {len(entry['stored'])} for others")
+            if entry["level"] is not None and entry["state"] in ("loading", "carrying") or entry["peers"]:
+                extra.append(f"airtime {entry['level']:g} %" if entry["level"] is not None else "")
+            if [item for item in extra if item]:
+                cell.add_row(Text(" · ".join(item for item in extra if item), style=SOFT))
+            if entry["hops"]:
+                signal = Text(f"{entry['hops']} hop" + ("s" if entry["hops"] > 1 else ""), style=SOFT)
+            elif entry["rssi"] is not None:
+                signal = Text(f"{entry['rssi']} dBm", style=TEAL if entry["rssi"] > -100 else ORANGE)
+            else:
+                signal = Text("")
+            grid.add_row(label, entry["firmware"] or "?", cell, signal, age(entry["seen_s"]) if entry["seen_s"] is not None else "")
             rows += 1
         if rows == 0:
             return panel(Align.center(Text("No repeater has reported yet. The query goes out at growing intervals.", style=SOFT)), "Repeaters")
         return panel(grid, "Repeaters")
+
+    def name_of(self, ident):
+        for entry in self.state["repeaters"]:
+            if entry["id"] == ident:
+                return entry["name"] or ident
+        return "this computer" if self.state["companion"] and self.state["companion"]["id"] == ident else ident
 
     def events_panel(self):
         lines = Table.grid(padding=(0, 1))

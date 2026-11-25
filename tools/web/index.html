@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCore-OTA</title>
+<style>
+:root {
+  --bg: #f4f7f6; --card: #ffffff; --ink: #0b2424; --soft: #5f7472; --rail: #cfe3e0; --teal: #0f766e; --orange: #fc790d;
+  --blue: #1e40af; --red: #b91c1c; --grey: #8a9a98; --map: #e8efed;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #071a1a; --card: #0d2626; --ink: #e6f2f0; --soft: #8fa8a5; --rail: #1f4543; --teal: #2dd4bf; --orange: #fb923c;
+    --blue: #93c5fd; --red: #f87171; --grey: #6b8280; --map: #0a2020; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 3px solid var(--teal); background: var(--card); flex-wrap: wrap; }
+header .brand b { color: var(--teal); letter-spacing: .04em; }
+header .brand span { color: var(--soft); margin-left: 8px; }
+header .title { font-weight: 700; font-size: 18px; }
+header .title i { color: var(--teal); font-style: normal; }
+main { padding: 16px 20px 40px; display: grid; gap: 16px; grid-template-columns: repeat(12, 1fr); max-width: 1500px; margin: 0 auto; }
+section { background: var(--card); border: 1px solid var(--rail); border-radius: 10px; padding: 14px 16px; grid-column: span 12; min-width: 0; }
+section h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--teal); }
+.half { grid-column: span 6; }
+@media (max-width: 900px) { .half { grid-column: span 12; } }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; }
+dt { color: var(--soft); }
+dd { margin: 0; }
+.big { font-weight: 700; color: var(--teal); }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; color: var(--teal); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rail); white-space: nowrap; }
+td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--rail); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.name { font-weight: 700; }
+.id { color: var(--soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; background: var(--grey); white-space: nowrap; }
+.s-loading, .s-carrying { background: var(--orange); }
+.s-complete, .s-applying, .s-trial, .s-waiting { background: var(--blue); color: #fff; }
+.s-up_to_date { background: var(--teal); color: #fff; }
+.s-rolled_back, .s-rejected { background: var(--red); }
+@media (prefers-color-scheme: dark) { .badge { color: #071a1a; } }
+.bar { height: 6px; border-radius: 3px; background: var(--rail); overflow: hidden; margin: 6px 0 4px; max-width: 420px; }
+.bar i { display: block; height: 100%; background: var(--teal); transition: width .6s; }
+.bar.manifest i, .bar.carry i { background: var(--orange); }
+.soft { color: var(--soft); }
+.next { color: var(--teal); font-variant-numeric: tabular-nums; }
+button, input { font: inherit; color: inherit; }
+button { border: 1px solid var(--rail); background: transparent; border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+button:hover { border-color: var(--teal); color: var(--teal); }
+button.main { background: var(--teal); border-color: var(--teal); color: #fff; }
+@media (prefers-color-scheme: dark) { button.main { color: #071a1a; } }
+input { background: var(--bg); border: 1px solid var(--rail); border-radius: 6px; padding: 4px 8px; min-width: 0; }
+.tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.row label { color: var(--soft); }
+#map { position: relative; height: 520px; border-radius: 8px; overflow: hidden; background: var(--map); touch-action: none; cursor: grab; user-select: none; }
+#map.pick { cursor: crosshair; }
+#tiles img { position: absolute; width: 256px; height: 256px; max-width: none; }
+@media (prefers-color-scheme: dark) { #tiles img { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9); } }
+#map svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+#map .credit { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: var(--soft); background: var(--card); padding: 1px 6px; border-radius: 4px; opacity: .9; }
+#map .credit a { color: inherit; }
+#map .zoom { position: absolute; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 4px; }
+#map .zoom button { background: var(--card); width: 30px; height: 30px; padding: 0; font-size: 18px; line-height: 1; }
+.link-route { stroke: var(--grey); stroke-width: 1.5; stroke-dasharray: 3 5; fill: none; }
+.link-data { stroke: var(--teal); stroke-width: 3; fill: none; stroke-linecap: round; }
+.link-data.active { stroke: var(--orange); stroke-dasharray: 10 8; animation: flow 1.2s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -18; } }
+@media (prefers-reduced-motion: reduce) { .link-data.active { animation: none; } .bar i { transition: none; } }
+.node circle, .node rect { stroke: var(--card); stroke-width: 2; }
+.node text { font-size: 12px; fill: var(--ink); paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round; }
+.node text.sub { font-size: 11px; fill: var(--soft); }
+.linklabel { font-size: 11px; fill: var(--ink); paint-order: stroke; stroke: var(--card); stroke-width: 3px; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; color: var(--soft); font-size: 12px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.legend u { display: inline-block; width: 22px; border-top: 3px solid var(--orange); margin-right: 5px; vertical-align: 3px; text-decoration: none; }
+.legend u.r { border-top: 2px dashed var(--grey); }
+#log div { display: grid; grid-template-columns: max-content 1fr; gap: 10px; padding: 2px 0; }
+#log time { color: var(--soft); font-variant-numeric: tabular-nums; }
+.good { color: var(--teal); } .warn { color: var(--orange); }
+.offline { color: var(--red); font-weight: 600; }
+.empty { color: var(--soft); padding: 10px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>FUNKMESH</b> DEUTSCHLAND e.V.<span>funkmesh.de</span></div>
+  <div><span id="conn" class="soft"></span></div>
+  <div class="title">MeshCore<i>-OTA</i> <span class="soft" id="version"></span></div>
+</header>
+<main>
+  <section class="half"><h2>Companion</h2><dl id="companion"></dl></section>
+  <section class="half"><h2>Airtime</h2><dl id="airtime"></dl></section>
+  <section>
+    <h2>Network</h2>
+    <div id="map"><div id="tiles"></div><svg id="graph"></svg>
+      <div class="zoom"><button id="zin" title="Zoom in">+</button><button id="zout" title="Zoom out">−</button><button id="zfit" title="Show all">◎</button></div>
+      <div class="credit" id="credit"></div></div>
+    <div class="row">
+      <button id="view"></button>
+      <label><input type="checkbox" id="tilesOn"> map background from OpenStreetMap</label>
+      <span class="soft" id="hint"></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--teal)"></i>up to date</span><span><i style="background:var(--orange)"></i>loading or carrying</span>
+      <span><i style="background:var(--blue)"></i>complete, applying, on trial</span><span><i style="background:var(--red)"></i>rolled back or rejected</span>
+      <span><i style="background:var(--grey)"></i>no report</span><span><u></u>package on its way</span><span><u class="r"></u>route from the computer</span>
+    </div>
+  </section>
+  <section>
+    <h2>Repeaters</h2>
+    <table><thead><tr><th>Repeater</th><th>Firmware</th><th>State</th><th>Path</th><th>Signal</th><th>Heard</th><th></th></tr></thead><tbody id="repeaters"></tbody></table>
+    <form class="row" id="add">
+      <label>Add a repeater</label>
+      <input id="aid" placeholder="ID, first 8 hex characters of the key" size="34" maxlength="8" pattern="[0-9a-fA-F]{8}" required>
+      <input id="aname" placeholder="Name" size="18" maxlength="32">
+      <input id="alat" placeholder="Latitude" size="10" inputmode="decimal">
+      <input id="alon" placeholder="Longitude" size="10" inputmode="decimal">
+      <button class="main">Save</button><button type="button" id="pick">Pick the position on the map</button>
+      <span id="formnote" class="warn"></span>
+    </form>
+  </section>
+  <section class="half"><h2>Offered updates</h2><table><thead><tr><th>Device</th><th>From</th><th>To</th><th>Changed pages</th><th>Packets</th><th>Apply</th></tr></thead><tbody id="packages"></tbody></table></section>
+  <section class="half"><h2>Log</h2><div id="log"></div></section>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = text => String(text ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const STATE = {loading: "loading", carrying: "carrying", waiting: "waiting", complete: "complete", applying: "applying", trial: "on trial", up_to_date: "up to date",
+  rolled_back: "rolled back", rejected: "rejected", unreachable: "not reachable", unknown: "no report", relay: "repeater", hop: "hop"};
+const COLOR = {loading: "--orange", carrying: "--orange", waiting: "--blue", complete: "--blue", applying: "--blue", trial: "--blue", up_to_date: "--teal",
+  rolled_back: "--red", rejected: "--red"};
+let state = null, got = 0, view = null, zoom = 12, center = null, fitted = false, picking = false, drag = null, edit = null;
+
+function span(seconds) {
+  seconds = Math.max(0, Math.round(seconds));
+  if (seconds < 3600) return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") + " min";
+  return Math.floor(seconds / 3600) + " h " + String(Math.floor(seconds % 3600 / 60)).padStart(2, "0") + " min";
+}
+function ago(seconds) {
+  if (seconds == null) return "";
+  seconds = Math.round(seconds);
+  if (seconds < 90) return seconds + " s ago";
+  if (seconds < 5400) return Math.floor(seconds / 60) + " min ago";
+  if (seconds < 172800) return Math.floor(seconds / 3600) + " h ago";
+  return Math.floor(seconds / 86400) + " days ago";
+}
+const drift = () => (Date.now() - got) / 1000;
+const label = r => r.name || r.id;
+
+function renderTop() {
+  const c = state.companion, a = state.airtime;
+  $("version").textContent = state.version || "";
+  $("companion").innerHTML = c ? `<dt>Name</dt><dd class="name">${esc(c.name)}</dd><dt>ID</dt><dd class="id">${esc(c.id)}</dd><dt>Radio</dt><dd>${esc(c.radio)}</dd>
+    <dt>Power</dt><dd>${c.power} dBm</dd><dt>Firmware</dt><dd>${esc(c.firmware)}</dd>
+    <dt>Settings</dt><dd>${state.settings ? `revision ${state.settings.revision}, ${state.settings.bytes} bytes in ${state.settings.packets} packets` : "no presets to send"}</dd>`
+    : `<dt>Connection</dt><dd class="warn">connecting to the companion ...</dd>`;
+  if (!a) { $("airtime").innerHTML = ""; return; }
+  const next = a.next_s == null ? "nothing waiting" : a.next_s - drift() < 1 ? "now" : "in " + span(a.next_s - drift());
+  $("airtime").innerHTML = `<dt>Share now</dt><dd class="big">${a.now.toFixed(a.now < 1 ? 2 : 1)} %${a.max > a.base ? ` <span class="soft">between ${a.base} % and ${a.max} %, by channel load</span>` : ""}</dd>
+    <dt>Used</dt><dd>${a.used.toFixed(2)} % since start</dd><dt>Channel</dt><dd>${a.heard.toFixed(2)} % in use by others</dd>
+    <dt>Sent</dt><dd>${a.sent} packets, ${Math.round(a.sent_s)} s airtime</dd><dt>Next packet</dt><dd class="next">${next}</dd>
+    <dt>Running</dt><dd>${span(a.running_s + drift())}</dd>`;
+}
+
+function progressHtml(r) {
+  const p = r.progress;
+  let html = `<span class="badge s-${r.state}">${STATE[r.state] || r.state}</span> ${esc(r.text)}`;
+  if (p && p.total) {
+    html += `<div class="bar ${r.state === "carrying" ? "carry" : ""}"><i style="width:${Math.round(100 * p.done / p.total)}%"></i></div>`;
+    if (p.detail) html += `<div class="soft">${esc(p.detail)}</div>`;
+    if (p.next_s != null || p.left_s) {
+      const wait = p.next_s == null ? null : p.next_s - drift();
+      html += `<div><span class="next">${wait == null ? "" : wait < 1 ? "next packet now" : "next packet in " + span(wait)}</span>${p.left_s ? `<span class="soft">${wait == null ? "" : ", "}about ${span(p.left_s - drift())} left</span>` : ""}</div>`;
+    }
+  }
+  if (r.apply_in_s != null && r.state === "complete") html += `<div class="next">applies in about ${span(r.apply_in_s - drift())}</div>`;
+  const extra = [];
+  if (r.level != null) extra.push(`airtime ${r.level} %`);
+  if (r.config != null) extra.push(`settings revision ${r.config}`);
+  if (r.stored && r.stored.length) extra.push(`keeps ${r.stored.length} package${r.stored.length > 1 ? "s" : ""} for others`);
+  if (r.peers && r.peers.length) extra.push("serves " + r.peers.map(p => esc(nameOf(p.id)) + (p.missing ? ` (${p.missing} pages to go)` : "")).join(", "));
+  if (extra.length) html += `<div class="soft">${extra.join(" · ")}</div>`;
+  return html;
+}
+function nameOf(id) {
+  if (state.companion && id === state.companion.id) return "this computer";
+  const r = state.repeaters.find(r => r.id === id);
+  return r ? label(r) : id.replace("?", "");
+}
+function pathHtml(r) {
+  if (r.hops == null) return `<span class="soft">unknown</span>`;
+  const parts = ["computer"].concat((r.via || []).map(nameOf)).concat([label(r)]);
+  let html = r.hops ? esc(parts.join(" › ")) + ` <span class="soft">(${r.hops} hop${r.hops > 1 ? "s" : ""})</span>` : "direct";
+  if (r.from && state.companion && r.from !== state.companion.id) html += `<div class="soft">loads from ${esc(nameOf(r.from))}</div>`;
+  return html;
+}
+function renderRepeaters() {
+  const rows = state.repeaters.filter(r => r.state !== "hop" && r.state !== "relay");
+  $("repeaters").innerHTML = rows.length ? rows.map(r => `<tr>
+    <td><div class="name">${esc(label(r))}</div><div class="id">${esc(r.id)}${r.board ? " · " + esc(r.board) : ""}</div></td>
+    <td>${esc(r.firmware || "?")}</td><td>${progressHtml(r)}</td><td>${pathHtml(r)}</td>
+    <td>${r.rssi != null ? r.rssi + " dBm" : ""}${r.snr != null ? `<div class="soft">SNR ${r.snr}</div>` : ""}</td>
+    <td class="soft">${r.seen_s != null ? ago(r.seen_s + drift()) : r.last_seen ? ago(Date.now() / 1000 - r.last_seen) : "never"}</td>
+    <td><div class="tools"><button data-edit="${esc(r.id)}">${r.mine ? "Edit" : "Add to my repeaters"}</button>${r.mine ? `<button data-remove="${esc(r.id)}">Remove</button>` : ""}<button data-query="${esc(r.id)}">Ask now</button></div></td>
+  </tr>`).join("") : `<tr><td colspan="7" class="empty">No repeater has reported yet. Add your repeaters below, or wait for them to answer the query.</td></tr>`;
+}
+function renderRest() {
+  $("packages").innerHTML = state.packages.length ? state.packages.map(p => `<tr><td class="name">${esc(p.board)}</td><td>${esc(p.from)}</td><td class="big">${esc(p.to)}</td>
+    <td>${p.changed} of ${p.pages}</td><td>${p.packets}</td><td>${esc(p.apply)}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">Nothing is offered at the moment.</td></tr>`;
+  $("log").innerHTML = state.log.length ? state.log.map(e => `<div><time>${esc(e.time)}</time><span class="${esc(e.level)}">${esc(e.text)}</span></div>`).join("") : `<div class="empty">Nothing yet.</div>`;
+}
+
+const world = z => 256 * Math.pow(2, z);
+const px = (lat, lon, z) => [(lon + 180) / 360 * world(z), (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * world(z)];
+const geo = (x, y, z) => [Math.atan(Math.sinh(Math.PI * (1 - 2 * y / world(z)))) * 180 / Math.PI, x / world(z) * 360 - 180];
+function nodes() {
+  const list = state.repeaters.map(r => ({id: r.id, name: label(r), state: r.state, lat: r.lat, lon: r.lon, sub: r.progress && r.progress.total ? Math.round(100 * r.progress.done / r.progress.total) + " %" : ""}));
+  if (state.companion) list.unshift({id: state.companion.id, name: state.companion.name, state: "pc", lat: state.companion.lat, lon: state.companion.lon, sub: "computer"});
+  return list;
+}
+function fit(list, w, h) {
+  const placed = list.filter(n => n.lat != null);
+  if (!placed.length) { center = [51.2, 10.4]; zoom = 6; return; }
+  const lats = placed.map(n => n.lat), lons = placed.map(n => n.lon);
+  center = [(Math.min(...lats) + Math.max(...lats)) / 2, (Math.min(...lons) + Math.max(...lons)) / 2];
+  for (zoom = 16; zoom > 3; zoom--) {
+    const a = px(Math.max(...lats), Math.min(...lons), zoom), b = px(Math.min(...lats), Math.max(...lons), zoom);
+    if (b[0] - a[0] < w - 160 && b[1] - a[1] < h - 160) break;
+  }
+}
+function layered(list, w, h) {
+  const depth = {}, me = state.companion ? state.companion.id : null;
+  if (me) depth[me] = 0;
+  for (let round = 0; round < 8; round++) for (const l of state.links) {
+    if (depth[l.from] != null && depth[l.to] == null) depth[l.to] = depth[l.from] + 1;
+  }
+  const columns = {};
+  for (const n of list) {
+    const d = depth[n.id] != null ? depth[n.id] : (n.state === "unknown" || n.state === "unreachable" ? 99 : 1);
+    (columns[d] = columns[d] || []).push(n);
+  }
+  const keys = Object.keys(columns).map(Number).sort((a, b) => a - b), pos = {};
+  keys.forEach((d, i) => columns[d].forEach((n, k) => {
+    pos[n.id] = [70 + (w - 220) * (keys.length > 1 ? i / (keys.length - 1) : .5), h * (k + 1) / (columns[d].length + 1)];
+  }));
+  return pos;
+}
+function renderMap() {
+  const box = $("map"), w = box.clientWidth, h = box.clientHeight, list = nodes();
+  const hasGeo = list.some(n => n.lat != null);
+  if (view == null) view = hasGeo ? "map" : "graph";
+  $("view").textContent = view === "map" ? "Show as network diagram" : "Show on the map";
+  if (view === "map" && (!fitted || center == null)) { fit(list, w, h); fitted = true; }
+  let pos = {};
+  const tiles = $("tiles");
+  if (view === "graph") {
+    pos = layered(list, w, h);
+    tiles.innerHTML = "";
+    $("credit").innerHTML = "";
+    $("hint").textContent = "";
+  } else {
+    const c = px(center[0], center[1], zoom), free = list.filter(n => n.lat == null);
+    list.forEach(n => { if (n.lat != null) { const p = px(n.lat, n.lon, zoom); pos[n.id] = [p[0] - c[0] + w / 2, p[1] - c[1] + h / 2]; } });
+    free.forEach((n, i) => { pos[n.id] = [w * (i + 1) / (free.length + 1), h - 34]; });
+    $("hint").textContent = picking ? "Click the map to set the position." : free.length ? "Repeaters without a position are lined up at the bottom. Edit one to place it." : "";
+    if ($("tilesOn").checked) {
+      const x0 = Math.floor((c[0] - w / 2) / 256), y0 = Math.floor((c[1] - h / 2) / 256), x1 = Math.floor((c[0] + w / 2) / 256), y1 = Math.floor((c[1] + h / 2) / 256), n = Math.pow(2, zoom);
+      let html = "";
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+        if (y < 0 || y >= n) continue;
+        html += `<img alt="" draggable="false" src="https://tile.openstreetmap.org/${zoom}/${((x % n) + n) % n}/${y}.png" style="left:${Math.round(x * 256 - c[0] + w / 2)}px;top:${Math.round(y * 256 - c[1] + h / 2)}px">`;
+      }
+      if (tiles.dataset.key !== html) { tiles.innerHTML = html; tiles.dataset.key = html; }
+      $("credit").innerHTML = `© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors`;
+    } else { tiles.innerHTML = ""; tiles.dataset.key = ""; $("credit").innerHTML = ""; }
+  }
+  let svg = "";
+  const order = state.links.slice().sort((a, b) => (a.kind === "data") - (b.kind === "data"));
+  for (const l of order) {
+    const a = pos[l.from], b = pos[l.to];
+    if (!a || !b) continue;
+    const bend = l.kind === "data" ? 18 : 0, mx = (a[0] + b[0]) / 2 - (b[1] - a[1]) / Math.hypot(b[0] - a[0], b[1] - a[1] || 1) * bend, my = (a[1] + b[1]) / 2 + (b[0] - a[0]) / Math.hypot(b[0] - a[0], b[1] - a[1] || 1) * bend;
+    svg += `<path class="link-${l.kind}${l.active ? " active" : ""}" d="M${a[0].toFixed(1)} ${a[1].toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${b[0].toFixed(1)} ${b[1].toFixed(1)}"/>`;
+    if (l.kind === "data") {
+      const text = l.progress != null ? Math.round(l.progress * 100) + " %" : l.missing != null ? l.missing + " pages to go" : "";
+      if (text) svg += `<text class="linklabel" x="${mx.toFixed(1)}" y="${(my - 4).toFixed(1)}" text-anchor="middle">${text}</text>`;
+    }
+  }
+  for (const n of list) {
+    const p = pos[n.id];
+    if (!p) continue;
+    const color = `var(${n.state === "pc" ? "--ink" : COLOR[n.state] || "--grey"})`;
+    svg += `<g class="node" data-node="${esc(n.id)}">` + (n.state === "pc" ? `<rect x="${p[0] - 9}" y="${p[1] - 9}" width="18" height="18" rx="3" fill="${color}"/>` : `<circle cx="${p[0]}" cy="${p[1]}" r="${n.state === "hop" ? 5 : 8}" fill="${color}"/>`)
+      + `<text x="${p[0] + 13}" y="${p[1] + 1}">${esc(n.name)}</text><text class="sub" x="${p[0] + 13}" y="${p[1] + 15}">${esc(n.state === "pc" ? n.sub : (STATE[n.state] || "") + (n.sub ? ", " + n.sub : ""))}</text></g>`;
+  }
+  $("graph").innerHTML = svg;
+}
+function render() { if (!state) return; renderTop(); renderRepeaters(); renderRest(); renderMap(); }
+
+async function post(name, body) {
+  const reply = await fetch("/api/" + name, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const data = await reply.json().catch(() => ({}));
+  if (!reply.ok) throw new Error(data.error || "The request failed.");
+  return data;
+}
+async function load() {
+  try {
+    const reply = await fetch("/api/state", {cache: "no-store"});
+    state = await reply.json();
+    got = Date.now();
+    $("conn").textContent = "";
+    $("conn").className = "soft";
+    if (!document.activeElement || !["INPUT"].includes(document.activeElement.tagName)) render();
+  } catch (error) {
+    $("conn").textContent = "No connection to meshcore-ota";
+    $("conn").className = "offline";
+  }
+}
+$("repeaters").addEventListener("click", async event => {
+  const b = event.target.closest("button");
+  if (!b) return;
+  try {
+    if (b.dataset.query) { await post("query", {id: b.dataset.query}); b.textContent = "Asked"; }
+    if (b.dataset.remove && confirm("Remove this repeater from the list?")) { await post("remove", {id: b.dataset.remove}); load(); }
+    if (b.dataset.edit) {
+      const r = state.repeaters.find(r => r.id === b.dataset.edit);
+      $("aid").value = r.id; $("aname").value = r.name || ""; $("alat").value = r.lat ?? ""; $("alon").value = r.lon ?? "";
+      $("aname").focus();
+    }
+  } catch (error) { $("formnote").textContent = error.message; }
+});
+$("add").addEventListener("submit", async event => {
+  event.preventDefault();
+  const number = value => value.trim() === "" ? null : Number(value.replace(",", "."));
+  try {
+    await post("repeater", {id: $("aid").value.trim().toLowerCase(), name: $("aname").value.trim(), lat: number($("alat").value), lon: number($("alon").value)});
+    $("formnote").textContent = "";
+    $("add").reset();
+    document.activeElement.blur();
+    load();
+  } catch (error) { $("formnote").textContent = error.message; }
+});
+$("pick").addEventListener("click", () => { picking = !picking; view = "map"; $("map").classList.toggle("pick", picking); $("map").scrollIntoView({behavior: "smooth", block: "center"}); renderMap(); });
+$("view").addEventListener("click", () => { view = view === "map" ? "graph" : "map"; renderMap(); });
+$("tilesOn").checked = localStorage.getItem("tiles") !== "0";
+$("tilesOn").addEventListener("change", () => { localStorage.setItem("tiles", $("tilesOn").checked ? "1" : "0"); renderMap(); });
+$("zin").addEventListener("click", () => { zoom = Math.min(18, zoom + 1); renderMap(); });
+$("zout").addEventListener("click", () => { zoom = Math.max(3, zoom - 1); renderMap(); });
+$("zfit").addEventListener("click", () => { fitted = false; renderMap(); });
+const map = $("map");
+map.addEventListener("pointerdown", event => {
+  if (event.target.closest("button") || view !== "map") return;
+  drag = {x: event.clientX, y: event.clientY, c: px(center[0], center[1], zoom), moved: false};
+  map.setPointerCapture(event.pointerId);
+});
+map.addEventListener("pointermove", event => {
+  if (!drag) return;
+  const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+  if (drag.moved) { center = geo(drag.c[0] - dx, drag.c[1] - dy, zoom); renderMap(); }
+});
+map.addEventListener("pointerup", event => {
+  if (drag && !drag.moved && picking) {
+    const box = map.getBoundingClientRect(), c = px(center[0], center[1], zoom);
+    const where = geo(c[0] + event.clientX - box.left - box.width / 2, c[1] + event.clientY - box.top - box.height / 2, zoom);
+    $("alat").value = where[0].toFixed(5); $("alon").value = where[1].toFixed(5);
+    picking = false; map.classList.remove("pick"); $("aid").focus(); renderMap();
+  }
+  drag = null;
+});
+map.addEventListener("wheel", event => { if (view !== "map") return; event.preventDefault(); zoom = Math.max(3, Math.min(18, zoom + (event.deltaY < 0 ? 1 : -1))); renderMap(); }, {passive: false});
+window.addEventListener("resize", () => state && renderMap());
+load();
+setInterval(load, 2000);
+setInterval(() => { if (state && (!document.activeElement || document.activeElement.tagName !== "INPUT")) { renderTop(); renderRepeaters(); } }, 1000);
+</script>
+</body>
+</html>

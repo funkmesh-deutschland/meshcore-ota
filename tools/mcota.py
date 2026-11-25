@@ -743,6 +743,15 @@ def airtime_ppm(args):
     return int(percent * 10000)
 
 
+def airtime_max_ppm(args):
+    most = getattr(args, "airtime_max", None)
+    if most is None:
+        most = 5.0
+    if not 0.05 <= most <= 5.0:
+        raise SystemExit("--airtime-max accepts values from 0.05 to 5 per cent.")
+    return max(airtime_ppm(args), int(most * 10000))
+
+
 def package_resolver(packages):
     import hashlib
 
@@ -777,21 +786,84 @@ def cmd_serve(args):
     send_packages(args, packages, {}, keys.pop() if len(keys) == 1 else None, package_resolver(packages))
 
 
-def send_packages(args, packages, old_versions, key_id=None, resolve=None, mine=None):
+def repeater_actions(home, queue):
+    def save(payload):
+        ident = str(payload.get("id", "")).strip().lower()
+        if len(ident) != 8 or any(c not in "0123456789abcdef" for c in ident):
+            raise ValueError("The ID is the first 8 hex characters of the key of the repeater.")
+        lat, lon = payload.get("lat"), payload.get("lon")
+        if (lat is None) != (lon is None) or (lat is not None and not (-90 <= float(lat) <= 90 and -180 <= float(lon) <= 180)):
+            raise ValueError("Latitude and longitude belong together, in degrees.")
+        data = load_repeaters(home)
+        entry = data.setdefault(ident, {"name": "", "firmware": "", "seen": 0})
+        entry["name"] = str(payload.get("name", "")).strip()[:32] or entry.get("name", "")
+        if lat is None:
+            entry.pop("lat", None)
+            entry.pop("lon", None)
+        else:
+            entry["lat"], entry["lon"] = round(float(lat), 6), round(float(lon), 6)
+        save_repeaters(home, data)
+        return {"ok": True}
+
+    def remove(payload):
+        data = load_repeaters(home)
+        data.pop(str(payload.get("id", "")).lower(), None)
+        save_repeaters(home, data)
+        return {"ok": True}
+
+    def query(payload):
+        queue.append(("query", str(payload.get("id", "")).lower()))
+        return {"ok": True}
+
+    return {"repeater": save, "remove": remove, "query": query}
+
+
+def send_packages(args, packages, old_versions, key_id=None, resolve=None, mine=None, settings=None, absent=None):
     import asyncio
     import time
+    from collections import deque
     mcota_companion, link = open_link(args)
+    import mcota_fleet
     import mcota_ui
+    from mcota_version import VERSION
+    home = os.path.abspath(args.dir)
     ppm = airtime_ppm(args)
+    most = airtime_max_ppm(args)
     offers = (15.0, 120.0) if args.test else (60.0, 3600.0)
+    log, queue, started, live = deque(maxlen=40), [], time.monotonic(), {}
+    web = None
+    if getattr(args, "web", None):
+        import mcota_web
+        web = mcota_web.Web(getattr(args, "listen", None) or "127.0.0.1", args.web, getattr(args, "web_password", None))
+        web.handlers = repeater_actions(home, queue)
+        web.state = mcota_fleet.snapshot(None, [], old_versions, load_repeaters(home), log, ppm, args.test, started, VERSION)
+        try:
+            web.start()
+        except OSError as error:
+            raise SystemExit(f"The web interface cannot use port {args.web}: {error}")
     board = None if args.plain or not mcota_ui.fancy() else mcota_ui.Dashboard(ppm, args.test)
+    if web and board is None:
+        print(f"Web interface: {web.address()}")
+    elif web:
+        board.note(f"Web interface: {web.address()}", mcota_ui.GOOD)
     if board is None:
         for manifest, blocks in packages:
             describe(manifest, blocks)
             print()
 
     def report(companion, providers, first, note=None):
+        if note:
+            log.appendleft({"time": time.strftime("%H:%M:%S"), "text": note, "level": "good" if note.startswith(("Route", "Target", "Connected")) else "warn"})
+        if first:
+            log.appendleft({"time": time.strftime("%H:%M:%S"), "text": f"Connected to {companion.name}", "level": "good"})
+        live["companion"], live["providers"] = companion, providers or live.get("providers") or []
+        companion.actions += queue
+        del queue[:]
+        state = mcota_fleet.snapshot(companion, live["providers"], old_versions, load_repeaters(home), log, ppm, args.test, started, VERSION)
+        if web:
+            web.state = state
         if board is not None:
+            board.state = state
             board.names = companion.names
             if note:
                 if note.startswith("Target "):
@@ -814,25 +886,24 @@ def send_packages(args, packages, old_versions, key_id=None, resolve=None, mine=
             print(time.strftime("%H:%M:%S"), note, flush=True)
             return
         parts = []
-        if companion.finder:
-            for key, hello in companion.finder.seen.items():
-                parts.append(f"{key} reports {hello['tag'] or 'unknown'}: {companion.states.get(key, '')}")
-        for provider in providers:
-            version = package_version(provider.manifest)
-            for k, v in provider.peers.items():
-                left = provider.packets_left(bytes.fromhex(k))
-                wait = provider.next_in()
-                state = "fetching manifest" if v["kind"] == 0 else "all packets sent" if not left else (
-                    f"{left} of {provider.packets_total()} packets still to send, next " + ("now" if not wait or wait < 1.0 else f"in {wait:.0f} s"))
-                parts.append(f"{k} loading {version}: {state} ({v['rssi']} dBm, {provider.now() - v['at']:.0f} s ago)")
-        print(f"{time.strftime('%H:%M:%S')} sent {sum(p.sent for p in providers)} packets ({sum(p.sent_ms for p in providers) / 1000:.0f} s airtime), "
-              f"requests {sum(p.requests for p in providers)}, repeaters: {'; '.join(parts) or 'nobody yet'}", flush=True)
+        for entry in state["repeaters"]:
+            if entry["state"] in ("hop", "relay") or (entry["state"] == "unknown" and not entry["text"]):
+                continue
+            text = f"{entry['name'] or entry['id']} ({entry['firmware'] or 'unknown'}): {entry['text']}"
+            moving = entry["progress"]
+            if moving and moving.get("next_s") is not None:
+                text += ", next packet " + ("now" if moving["next_s"] < 1.0 else f"in {moving['next_s']:.0f} s")
+            parts.append(text)
+        air = state["airtime"]
+        print(f"{time.strftime('%H:%M:%S')} airtime {air['now']:g} %, sent {air['sent']} packets ({air['sent_s']:.0f} s airtime), "
+              f"requests {air['requests']}, repeaters: {'; '.join(parts) or 'nobody yet'}", flush=True)
 
     problem = None
     if board is not None:
         board.live.start()
     try:
-        asyncio.run(mcota_companion.serve(link, packages, ppm, offers[0], offers[1], report, 1.0 if board is not None else 5.0, key_id, resolve, args.hops, parse_routes(args.route, args.hops), mine))
+        asyncio.run(mcota_companion.serve(link, packages, ppm, offers[0], offers[1], report, 1.0 if board is not None or web else 5.0, key_id, resolve, args.hops,
+                                          parse_routes(args.route, args.hops), mine, most, settings, absent))
     except KeyboardInterrupt:
         problem = "Stopped."
     except SystemExit as error:
@@ -840,6 +911,8 @@ def send_packages(args, packages, old_versions, key_id=None, resolve=None, mine=
     finally:
         if board is not None:
             board.live.stop()
+        if web:
+            web.stop()
     if board is not None and board.providers:
         sent = sum(p.sent for p in board.providers)
         print(f"Sent: {sent} packets in {sum(p.sent_ms for p in board.providers) / 1000:.0f} s airtime.")
@@ -1020,11 +1093,29 @@ def save_repeaters(home, data):
         json.dump(data, fh, indent=2, ensure_ascii=False)
 
 
-def note_repeater(home, hello, firmware, name=""):
+def absent_repeaters(args):
+    import mcota_build
+    home = os.path.abspath(args.dir)
+    found = {}
+    for ident, entry in load_repeaters(home).items():
+        board, label = entry.get("board"), entry.get("firmware")
+        if not board or not label or not os.path.exists(mcota_build.firmware_file(home, board, label)):
+            continue
+        data = open(mcota_build.firmware_file(home, board, label), "rb").read()
+        found[ident] = {"id": ident, "virtual": True, "board": hashlib.sha256(board.encode()).digest()[:4], "size": len(data), "hash": hashlib.sha256(data).digest()[:8],
+                        "tag": label, "key": None, "route": None, "name": entry.get("name", "")}
+    return found
+
+
+def note_repeater(home, hello, firmware, name="", board=""):
     import time
+    if hello.get("virtual"):
+        return
     data = load_repeaters(home)
     entry = data.setdefault(hello["id"], {"name": name, "firmware": "", "seen": 0})
     entry.update(firmware=firmware, seen=int(time.time()))
+    if board:
+        entry["board"] = board
     if name:
         entry["name"] = name
     save_repeaters(home, data)
@@ -1160,7 +1251,7 @@ def make_resolver(args, old_versions):
                 data = open(mcota_build.firmware_file(home, board, label), "rb").read()
                 if len(data) == hello["size"] and hashlib.sha256(data).digest()[:8] == hello["hash"]:
                     running = label
-            note_repeater(home, hello, running or hello["tag"], hello.get("name", ""))
+            note_repeater(home, hello, running or hello["tag"], hello.get("name", ""), board)
             if running is None:
                 return (f"runs {hello['tag'] or 'unknown firmware'}, which was not built here. Without the base firmware no update can be built. "
                         f"The repeater needs the base firmware once (menu: Build firmware)")
@@ -1192,8 +1283,25 @@ def make_resolver(args, old_versions):
     return resolve
 
 
+def fill_from_config(args):
+    import json
+    path = os.path.join(os.path.abspath(args.dir), "config.json")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not args.serial and not args.ble:
+        args.serial, args.ble = data.get("serial") or None, data.get("ble") or None
+        args.test = args.test or bool(data.get("test"))
+    if args.airtime is None and data.get("airtime"):
+        args.airtime = data["airtime"]
+    if getattr(args, "airtime_max", None) is None and data.get("airtime_max"):
+        args.airtime_max = data["airtime_max"]
+
+
 def cmd_update(args):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    fill_from_config(args)
     home = os.path.abspath(args.dir)
     if not os.path.exists(folder(args, "keys", "signing.key")):
         raise SystemExit(f"There is no key in {home}. Run 'meshcore-ota init' first.")
@@ -1202,7 +1310,13 @@ def cmd_update(args):
         collect_updates(args)
         return
     old_versions = {}
-    send_packages(args, [], old_versions, known_key_ids(home), make_resolver(args, old_versions), lambda: set(load_repeaters(home)))
+    send_packages(args, [], old_versions, known_key_ids(home), make_resolver(args, old_versions), lambda: set(load_repeaters(home)),
+                  lambda: settings_package(home), lambda: absent_repeaters(args))
+
+
+def cmd_web(args):
+    args.plain = True
+    cmd_update(args)
 
 
 def newest_release(args, wanted=None):
@@ -1389,7 +1503,11 @@ def main():
     def send_args(p):
         p.add_argument("--airtime", type=float, help="share of airtime in per cent, 0.05 to 5. Default 0.5, in test mode 5")
         p.add_argument("--test", action="store_true", help="test mode matching the test firmware: short intervals, 5 %% airtime")
+        p.add_argument("--airtime-max", type=float, help="upper limit in per cent that the airtime may rise to while the channel is quiet, default 5. The same value as --airtime keeps the share fixed")
         p.add_argument("--plain", action="store_true", help="plain line output instead of the dashboard")
+        p.add_argument("--web", type=int, nargs="?", const=8080, metavar="PORT", help="also serve the web interface, default port 8080")
+        p.add_argument("--listen", default="127.0.0.1", metavar="ADDRESS", help="address the web interface listens on, default 127.0.0.1. Use 0.0.0.0 to reach it from other devices in the network")
+        p.add_argument("--web-password", metavar="PASSWORD", help="ask for this password in the browser")
         p.add_argument("--hops", type=int, choices=(0, 1, 2), default=2, help="reach repeaters up to this many hops from the companion, default 2. 0 means direct neighbours only")
         p.add_argument("--route", action="append", default=[], metavar="TARGET=HOP,HOP", help="route to a repeater by hand, for example 1a2b3c4d=5e or 1a2b3c4d=5e01,77aa. The target is the start of its key, hops as hex seen from the companion")
 
@@ -1415,16 +1533,20 @@ def main():
     p.add_argument("--switch-compiler", action="store_true", help="adopt the compiler MeshCore intends for this version")
     p.add_argument("archive", nargs="*", help="ZIP files from meshcore.io. Without it everything from downloads")
     p.set_defaults(func=cmd_build)
-    p = sub.add_parser("update", help="build, sign and send firmware and packages")
-    link_args(p)
-    send_args(p)
-    p.add_argument("--board", help="only build this device type")
-    p.add_argument("--offline", action="store_true", help="do not check MeshCore for new versions, only use the folder")
-    p.add_argument("--manual-apply", action="store_true", help="repeaters do not apply automatically but wait for 'ota apply'")
-    p.add_argument("--build-only", action="store_true", help="only build and sign packages, do not send")
-    p.add_argument("--no-rollback", action="store_true", help="devices without room for a rollback copy still apply automatically. Without this option they wait for the command ota apply")
-    p.add_argument("--switch-compiler", action="store_true", help="adopt the compiler MeshCore intends for this version")
-    p.set_defaults(func=cmd_update)
+    for name, text, func in (("update", "build, sign and send firmware and packages", cmd_update),
+                             ("web", "like update, without the dashboard in the console and with the web interface, for running as a service", cmd_web)):
+        p = sub.add_parser(name, help=text)
+        link_args(p)
+        send_args(p)
+        p.add_argument("--board", help="only build this device type")
+        p.add_argument("--offline", action="store_true", help="do not check MeshCore for new versions, only use the folder")
+        p.add_argument("--manual-apply", action="store_true", help="repeaters do not apply automatically but wait for 'ota apply'")
+        p.add_argument("--build-only", action="store_true", help="only build and sign packages, do not send")
+        p.add_argument("--no-rollback", action="store_true", help="devices without room for a rollback copy still apply automatically. Without this option they wait for the command ota apply")
+        p.add_argument("--switch-compiler", action="store_true", help="adopt the compiler MeshCore intends for this version")
+        p.set_defaults(func=func)
+        if name == "web":
+            p.set_defaults(web=8080)
     p = sub.add_parser("status", help="query the state of a repeater through the companion")
     link_args(p)
     p.add_argument("--to", required=True, help="repeater: name or start of its key")

@@ -38,7 +38,7 @@ def head(title):
 
 def load_config(home):
     path = os.path.join(home, CONFIG_FILE)
-    data = {"serial": "", "ble": "", "airtime": None, "test": False, "hops": 2}
+    data = {"serial": "", "ble": "", "airtime": None, "airtime_max": None, "test": False, "hops": 2, "web": 0, "listen": "127.0.0.1", "web_password": ""}
     if os.path.exists(path):
         with open(path, encoding="utf-8") as fh:
             data.update(json.load(fh))
@@ -53,7 +53,8 @@ def save_config(home, data):
 def namespace(home, config, **extra):
     values = dict(dir=home, serial=config["serial"], ble=config["ble"], airtime=config["airtime"], test=config["test"], hops=config["hops"],
                   plain=False, route=[], offline=False, manual_apply=False, no_rollback=False, switch_compiler=False, board=None, build_only=False,
-                  version=None, device=None)
+                  version=None, device=None, airtime_max=config.get("airtime_max"), web=config.get("web") or None, listen=config.get("listen") or "127.0.0.1",
+                  web_password=config.get("web_password") or None)
     values.update(extra)
     return argparse.Namespace(**values)
 
@@ -81,8 +82,13 @@ def status_line(home, config):
     grid.add_row("Key", f"ID {mcota.key_id(key).hex()}" if key else "missing")
     grid.add_row("Companion", Text(link, style=TEAL if config["serial"] or config["ble"] else ORANGE))
     grid.add_row("Released", ", ".join(allowed) if allowed else "no version selected yet" if allowed is not None else "all built versions")
-    grid.add_row("Settings", f"revision {settings['revision']}, presets: {', '.join(p['name'] for p in settings['presets']) or 'none'}")
-    grid.add_row("Airtime", f"{config['airtime'] or (5.0 if config['test'] else 0.5):g} %" + (" (test mode)" if config["test"] else ""))
+    grid.add_row("Firmware", f"build +{settings['revision']}")
+    grid.add_row("Settings", f"revision {settings['config']}, presets: {', '.join(p['name'] for p in settings['presets']) or 'none'}")
+    base = config["airtime"] or (5.0 if config["test"] else 0.5)
+    most = max(base, config.get("airtime_max") or 5.0)
+    grid.add_row("Airtime", f"{base:g} %" + (f", up to {most:g} % on a quiet channel" if most > base else "") + (" (test mode)" if config["test"] else ""))
+    if config.get("web"):
+        grid.add_row("Web", f"port {config['web']}" + (", open to the network" if config.get("listen") == "0.0.0.0" else ", this computer only"))
     console.print(grid)
 
 
@@ -170,7 +176,7 @@ def menu_firmware(home, config):
     if not name:
         return
     settings = mcota_build.load_settings(home)
-    console.print(f"Building {name} {version} with your key and settings revision {settings['revision']}.")
+    console.print(f"Building {name} {version} with your key as build +{settings['revision']}, presets of settings revision {settings['builtin']['config']} included.")
     try:
         board, label, path, _ = mcota_build.build_version(name, version, commit, home, config["test"], False)
     except SystemExit as error:
@@ -236,7 +242,11 @@ def menu_settings(home, config):
     while True:
         data = mcota_build.load_settings(home)
         head("Settings and presets")
-        console.print(f"Revision {data['revision']}")
+        try:
+            blob = mcota.settings_package(home)
+            console.print(f"Revision {data['config']}" + (f", {len(blob)} of {mcota.SETTINGS_MAX} bytes" if blob else ""))
+        except SystemExit as error:
+            console.print(Text(f"Revision {data['config']}. {error}", style=ORANGE))
         for index, preset in enumerate(data["presets"], 1):
             values = ", ".join(f"{k}={v}" for k, v in preset["values"].items()) or "no values"
             console.print(f"  {index}  {preset['name']:<16} {values}")
@@ -348,7 +358,28 @@ def menu_link(home, config):
         config["airtime"] = min(5.0, max(0.05, float(percent.replace(",", "."))))
     except ValueError:
         pass
+    most = ask("Upper limit the airtime may rise to on a quiet channel, in per cent", f"{max(config.get('airtime_max') or 5.0, config['airtime'] or 0.5):g}")
+    try:
+        config["airtime_max"] = min(5.0, max(config["airtime"] or 0.5, float(most.replace(",", "."))))
+    except ValueError:
+        pass
     config["test"] = ask("Test mode with test firmware and short intervals? (y/n)", "y" if config["test"] else "n").lower().startswith("y")
+    save_config(home, config)
+
+
+def menu_web(home, config):
+    head("Web interface")
+    port = ask("Port of the web interface, 0 switches it off", str(config.get("web") or 0))
+    try:
+        config["web"] = max(0, min(65535, int(port)))
+    except ValueError:
+        pass
+    if config["web"]:
+        wide = ask("Reachable from other devices in the network? (y/n)", "y" if config.get("listen") == "0.0.0.0" else "n").lower().startswith("y")
+        config["listen"] = "0.0.0.0" if wide else "127.0.0.1"
+        config["web_password"] = ask("Password for the browser, empty for none", config.get("web_password") or "")
+        console.print(Text(f"The dashboard serves the web interface at http://{'<address of this computer>' if wide else 'localhost'}:{config['web']}/", style=TEAL))
+        pause()
     save_config(home, config)
 
 
@@ -439,6 +470,7 @@ ENTRIES = [
     ("7", "Key", menu_key),
     ("8", "Update program", menu_update),
     ("9", "Custom firmware", menu_custom),
+    ("10", "Web interface", menu_web),
 ]
 
 

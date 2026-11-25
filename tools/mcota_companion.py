@@ -27,11 +27,15 @@ PUSH_MSG_WAITING = 0x83
 PUSH_RAW_DATA = 0x84
 PUSH_LOGIN_SUCCESS = 0x85
 PUSH_LOGIN_FAIL = 0x86
+PUSH_LOG_RX = 0x88
 PUSH_NEW_ADVERT = 0x8A
 PUSH_PATH_DISCOVERY = 0x8D
 DISCOVER_GAP = 90.0
 DISCOVER_AGAIN = 3600.0
 BUSY_QUERY_GAPS = 10
+STATUS_GAPS = 15
+ABSENT_AFTER = 600.0
+SETTINGS_RELOAD = 60.0
 MAX_HOPS = 2
 WIDE_HOPS_VERSION = 14
 TYPE_REPEATER = 2
@@ -139,6 +143,15 @@ class Companion:
         self.heard = []
         self.paths = []
         self.last_error = ""
+        self.lat = self.lon = None
+        self.air = []
+        self.positions = {}
+        self.keys = {}
+        self.budget = None
+        self.watcher = None
+        self.settings = None
+        self.actions = []
+        self.absent = {}
 
     async def _wait(self, codes, timeout):
         deadline = time.monotonic() + timeout
@@ -159,6 +172,9 @@ class Companion:
             raise SystemExit("The companion does not answer. Is the port right, and does it run companion firmware?")
         self.tx_power = info[2]
         self.public_key = info[4:36]
+        lat, lon = struct.unpack("<ii", info[36:44])
+        if lat or lon:
+            self.lat, self.lon = lat / 1e6, lon / 1e6
         self.freq, self.bw = struct.unpack("<II", info[48:56])
         self.sf, self.cr = info[56], info[57]
         self.name = info[58:].decode(errors="replace")
@@ -195,10 +211,12 @@ class Companion:
                 continue
             path_len = frame[35]
             hop_size, hops = (path_len >> 6) + 1, path_len & 63
+            lat, lon = struct.unpack("<ii", frame[136:144]) if len(frame) >= 144 else (0, 0)
             found.append({
                 "key": frame[1:33], "type": frame[33], "name": frame[100:132].split(b"\0")[0].decode(errors="replace"),
                 "known": path_len != PATH_UNKNOWN, "hop_size": hop_size if path_len != PATH_UNKNOWN else 0,
                 "path": frame[36:36 + hop_size * hops] if path_len != PATH_UNKNOWN else b"",
+                "lat": lat / 1e6 if lat or lon else None, "lon": lon / 1e6 if lat or lon else None,
             })
         return found
 
@@ -253,6 +271,8 @@ class Companion:
         for frame in frames:
             if len(frame) > 4 and frame[0] == PUSH_RAW_DATA:
                 out.append((frame[4:], struct.unpack("b", frame[1:2])[0] / 4.0, struct.unpack("b", frame[2:3])[0]))
+            elif len(frame) > 3 and frame[0] == PUSH_LOG_RX:
+                self.air.append(len(frame) - 3)
             elif len(frame) >= 33 and frame[0] in (PUSH_ADVERT, PUSH_NEW_ADVERT):
                 self.heard.append((frame[1:33], frame[33] if frame[0] == PUSH_NEW_ADVERT and len(frame) > 33 else None))
             elif len(frame) >= 9 and frame[0] == PUSH_PATH_DISCOVERY:
@@ -295,15 +315,22 @@ async def learn_route(companion, finder, key, contact, max_hops, report, provide
         report(companion, providers, False, f"Route to {name}: via {hops_text(path, hop_size)}")
 
 
-async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=5.0, key_id=None, resolve=None, max_hops=MAX_HOPS, routes=(), mine=None):
-    from mcota_provider import Budget, Finder, Provider, lora_airtime_ms
+async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=5.0, key_id=None, resolve=None, max_hops=MAX_HOPS, routes=(), mine=None,
+                budget_max=None, settings=None, absent=None):
+    from mcota_provider import Budget, Finder, Provider, Settings, Watcher, lora_airtime_ms, NODE_FETCHING, NODE_COMPLETE
     companion = Companion(link)
     await companion.start()
     contacts = await companion.contacts()
     companion.names = {c["key"][:4].hex(): c["name"] for c in contacts}
+    companion.keys = {c["key"][:4].hex(): c["key"] for c in contacts}
+    companion.positions = {c["key"][:4].hex(): (c["lat"], c["lon"]) for c in contacts if c["lat"] is not None}
     repeaters = {c["key"]: c for c in contacts if c["type"] == TYPE_REPEATER}
-    budget = Budget(budget_ppm, time.monotonic)
+    budget = Budget(budget_ppm, time.monotonic, budget_max)
     airtime = lambda n: lora_airtime_ms(n, companion.sf, companion.bw, companion.cr)
+    companion.budget = budget
+    companion.watcher = Watcher()
+    started = time.monotonic()
+    blob, blob_at, nudged, refreshed = None, -SETTINGS_RELOAD, {}, {}
 
     def provider_for(manifest, blocks, route=None):
         extra = {"target": route["target"], "hops": [route["path"][i:i + route["hop_size"]] for i in range(0, len(route["path"]), route["hop_size"])],
@@ -333,14 +360,62 @@ async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=
     searched, search_at = {}, time.monotonic() + 20.0
     try:
         while True:
+            now = time.monotonic()
+            if settings and now - blob_at >= SETTINGS_RELOAD:
+                blob_at = now
+                fresh = await asyncio.to_thread(settings)
+                if fresh != blob:
+                    blob = fresh
+                    companion.settings = Settings(blob, companion.public_key[:4], airtime, budget, least=offer_min, most=offer_max) if blob else None
+                    nudged.clear()
             for payload, snr, rssi in await companion.received():
                 for provider in providers:
                     provider.receive(payload, snr, rssi)
+                companion.watcher.observe(payload)
+                if companion.settings:
+                    companion.settings.receive(payload)
                 hello = finder.receive(payload, snr, rssi) if finder else None
                 if hello and resolve:
                     hello["name"] = companion.names.get(hello["id"], "")
                     companion.states[hello["id"]] = "checking"
                     pending.append((hello, asyncio.ensure_future(asyncio.to_thread(resolve, hello, companion.states))))
+            lengths, companion.air = companion.air, []
+            for length in lengths:
+                budget.heard(airtime(length))
+            actions, companion.actions = companion.actions, []
+            for action, ident in actions:
+                if action == "query" and finder:
+                    finder.refresh(ident, 2.0)
+            for ident, hello in list(finder.seen.items()) if finder else []:
+                sender = companion.settings
+                if sender and hello.get("config") is not None and hello["config"] < sender.revision and now - nudged.get(ident, -1e9) >= offer_min * BUSY_QUERY_GAPS:
+                    nudged[ident] = now
+                    route = hello.get("route")
+                    if route:
+                        sender.push(ident, route["path"], route["hop_size"], 0.0)
+                    else:
+                        sender.announce()
+                    report(companion, providers, False, f"{companion.names.get(ident, ident)}: gets the settings revision {sender.revision} (has {hello['config']})")
+                    refreshed[ident] = now
+                due = None
+                if hello.get("loader") in (1, 2):
+                    due = hello["at"] + offer_min * 2
+                elif hello.get("node") == NODE_COMPLETE and hello.get("apply_in") is not None:
+                    due = hello["at"] + hello["apply_in"] + offer_min * 2
+                elif hello.get("node") == NODE_FETCHING and hello.get("from") and hello["from"] != companion.public_key[:4].hex():
+                    due = hello["at"] + offer_min * STATUS_GAPS
+                elif sender and hello.get("config") is not None and hello["config"] < sender.revision:
+                    due = hello["at"] + offer_min * STATUS_GAPS
+                if due is not None and hello.get("route") and finder.now() >= due and now - refreshed.get(ident, -1e9) >= offer_min * 2:
+                    refreshed[ident] = now
+                    finder.refresh(ident, 2.0)
+            if absent and resolve and finder and now - started >= ABSENT_AFTER:
+                for ident, virtual in absent().items():
+                    if ident in finder.seen or ident in companion.absent:
+                        continue
+                    companion.absent[ident] = virtual
+                    companion.states[ident] = "checking"
+                    pending.append((virtual, asyncio.ensure_future(asyncio.to_thread(resolve, virtual, companion.states))))
             heard, companion.heard = companion.heard, []
             for key, kind in heard:
                 if finder and max_hops > 0 and key[:4] not in fixed and (kind == TYPE_REPEATER or key in repeaters):
@@ -390,6 +465,8 @@ async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=
                 else:
                     manifest, blocks, text = result
                     route = hello.get("route")
+                    if hello.get("virtual"):
+                        text = text.replace("gets ", "is not reachable, offering ", 1) + " for repeaters that carry it there"
                     companion.states[hello["id"]] = text
                     if route:
                         if all(p.manifest != manifest or p.target != route["target"] for p in providers):
@@ -411,10 +488,16 @@ async def serve(link, packages, budget_ppm, offer_min, offer_max, report, every=
                     if not await companion.send_raw(*answer):
                         report(companion, providers, False, f"Companion: {companion.last_error}")
                     sent = True
-            if not sent and finder and any(p.busy() for p in providers) and finder.quiet() >= offer_min * BUSY_QUERY_GAPS:
+            if not sent and finder and any(p.busy() for p in providers) and finder.quiet() >= offer_max:
                 asked = finder.poll()
                 if asked is not None:
                     if not await companion.send_raw(*asked):
+                        report(companion, providers, False, f"Companion: {companion.last_error}")
+                    sent = True
+            if not sent and companion.settings:
+                part = companion.settings.poll()
+                if part is not None:
+                    if not await companion.send_raw(*part):
                         report(companion, providers, False, f"Companion: {companion.last_error}")
                     sent = True
             for step in range(0 if sent else len(providers)):
