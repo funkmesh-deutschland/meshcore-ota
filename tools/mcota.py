@@ -1063,14 +1063,22 @@ def package_for(args, board, old_label, new_label, build, key=None):
     private = private_for(home, key or mcota_build.key_index(home).get(f"{board}-{old_label}", ""))
     if os.path.exists(target) and os.path.getmtime(target) >= max(os.path.getmtime(old_path), os.path.getmtime(new_path)) and open(target, "rb").read(8)[6:8] == wanted:
         manifest, blocks = read_package(target)
-        if manifest[116:124] == key_id(public_bytes(private)):
+        if manifest[116:124] == key_id(public_bytes(private)) and struct.unpack("<I", manifest[16:20])[0] == (mcota_build.build_order(new_label) or build):
             return manifest, blocks
     old = open(old_path, "rb").read()
     new = open(new_path, "rb").read()
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    manifest, blocks = make_package(old, new, private, board, new_label, build, not args.manual_apply, args.no_rollback, board_base(board, home))
+    manifest, blocks = make_package(old, new, private, board, new_label, mcota_build.build_order(new_label) or build, not args.manual_apply, args.no_rollback, board_base(board, home))
     write_package(target, manifest, blocks)
     return manifest, blocks
+
+
+def settings_package(home):
+    import mcota_build
+    data = mcota_build.load_settings(home)
+    if not data["config"] or not os.path.exists(os.path.join(home, "keys", "signing.key")):
+        return None
+    return make_settings(load_private(os.path.join(home, "keys", "signing.key")), data["config"], mcota_build.settings_presets(home))
 
 
 def collect_updates(args, quiet=False):

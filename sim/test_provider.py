@@ -5,13 +5,17 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 import mcota
-from mcota_provider import Budget, Finder, Provider, lora_airtime_ms
+from mcota_provider import Budget, Finder, Provider, Settings, Watcher, lora_airtime_ms
+import hashlib
 
 fixture, binary = sys.argv[1], sys.argv[2]
 manifest, blocks = mcota.read_package(os.path.join(fixture, "update.mcota"))
 new = open(os.path.join(fixture, "new.bin"), "rb").read()
 failures = 0
 routes = []
+reports = []
+watcher = Watcher()
+good_key = hashlib.sha256(open(os.path.join(fixture, "good.pub"), "rb").read()).digest()[:8]
 
 
 def check(ok, text):
@@ -48,10 +52,17 @@ def run(pub, board, loss, corrupt, target=None, hops=()):
     state = None
     pinged = False
     routes.clear()
+    reports.clear()
+    watcher.links.clear()
+    listener = Finder(bytes.fromhex("a1b2c3d4"), good_key, lambda n: 1.0, Budget(50000, lambda: clock[0]), now=lambda: clock[0], rng=rng.random)
     for step in range(200000):
         clock[0] += 0.1
         line, sent = command("T 100")
         for packet in sent:
+            if packet[2] == 8:
+                listener.receive(packet)
+                reports.append(dict(listener.seen["77010203"]))
+            watcher.observe(packet)
             if rng.random() >= loss:
                 provider.receive(packet)
         packet = provider.poll()
@@ -84,6 +95,12 @@ check(int(state[4]) > 0, "nothing was bundled")
 check(state[5] == "1", "ping of the receiver was not answered")
 check(provider.sent_ms <= seconds * 1000 * 0.05 + 2000, f"budget exceeded: {provider.sent_ms:.0f} ms in {seconds:.0f} s")
 print(f"Provider on the computer: {seconds / 60:.0f} min, {provider.sent} packets sent, {provider.requests} requests, {state[4]} bundles at the receiver")
+check([r["node"] for r in reports] == [1, 2], f"the repeater does not report the start and the end of loading by itself: {[r['node'] for r in reports]}")
+if len(reports) == 2:
+    check(reports[0]["from"] == "a1b2c3d4" and reports[0]["campaign"] == provider.campaign[:4] and reports[0]["pages"] == provider.pages, f"report at the start is wrong: {reports[0]}")
+    check(reports[1]["have"] == provider.pages and reports[1]["apply_in"] is None and reports[1]["level"] == 50000 and reports[1]["config"] == 0, f"report at the end is wrong: {reports[1]}")
+link = watcher.links.get("77010203")
+check(link is not None and link["from"] == "a1b2c3d4" and link["campaign"] == provider.campaign[:4], f"overheard request is not attributed: {link}")
 
 state, data, provider, seconds = run("other.pub", "sim_board", 0.0, 0.0)
 check(state[1] == "0" and provider.requests == 0, "receiver with a foreign key sent a request")
@@ -200,6 +217,75 @@ check(on_time, "the next packet does not go out at the announced time")
 check(parts > 1, "no page with several packets in the test package")
 check(idle is None, "a waiting time is shown although nothing is waiting")
 check(whole > 0.0 and abs(whole - took) < 5.0, f"remaining time {whole:.0f} s does not fit the {took:.0f} s the transfer took")
+
+
+def spread_settings(name, routed):
+    clock = [0.0]
+    blob = open(os.path.join(fixture, name), "rb").read()
+    settings = Settings(blob, bytes.fromhex("a1b2c3d4"), lambda n: 80 + n * 5.6, Budget(50000, lambda: clock[0]), least=10.0, most=120.0,
+                        now=lambda: clock[0], rng=random.Random(6).random)
+    proc = subprocess.Popen([binary, os.path.join(fixture, "old.bin"), os.path.join(fixture, "good.pub"), "sim_board", os.path.join(fixture, "slot_b.bin")],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    if routed:
+        settings.note_at = 1e9
+        settings.push("77010203", bytes.fromhex("aabbccdd"), 2)
+    paths, state = [], None
+    for step in range(9000):
+        clock[0] += 0.1
+        proc.stdin.write("T 100\n"); proc.stdin.flush()
+        while True:
+            line = proc.stdout.readline().strip()
+            if line.startswith("S "):
+                if not routed:
+                    settings.receive(bytes.fromhex(line[2:]))
+            elif not line.startswith("V "):
+                break
+        item = settings.poll()
+        if item:
+            paths.append(item[1].hex())
+            proc.stdin.write("R " + item[0].hex() + "\n"); proc.stdin.flush(); proc.stdout.readline()
+        if step % 50 == 49:
+            proc.stdin.write("Q\n"); proc.stdin.flush()
+            state = proc.stdout.readline().split()
+            if state[8] == str(settings.revision):
+                break
+    proc.stdin.close(); proc.wait()
+    return state, settings, paths, clock[0]
+
+
+state, settings, paths, seconds = spread_settings("settings.bin", False)
+check(state[8] == "5" and settings.asks >= 1 and all(p == "" for p in paths), f"settings do not reach a repeater in range: {state}")
+print(f"Settings to a repeater in range: {settings.sent} packets, {settings.sent_ms / 1000:.1f} s airtime, after {seconds:.0f} s")
+state, settings, paths, seconds = spread_settings("settings2.bin", True)
+check(state[8] == "6" and settings.asks == 0 and paths and all(p == "aabbccdd" for p in paths), f"settings do not reach a repeater over a route: {state} {paths[:2]}")
+print(f"Settings over 2 hops: {settings.sent} packets, {settings.sent_ms / 1000:.1f} s airtime")
+
+
+def load_control():
+    clock = [0.0]
+    budget = Budget(5000, lambda: clock[0], most=50000)
+    steps = []
+    for _ in range(5):
+        clock[0] += 61.0
+        budget.take(1e9)
+        steps.append(budget.ppm)
+    budget.heard(1500.0)
+    dropped = (budget.ppm, budget.ms <= 2000.0)
+    for _ in range(4):
+        budget.heard(500.0)
+        clock[0] += 30.0
+        budget.take(1e9)
+    held = budget.ppm
+    fixed = Budget(5000, lambda: clock[0])
+    clock[0] += 600.0
+    fixed.take(1e9)
+    return steps, dropped, held, fixed.ppm
+
+
+steps, dropped, held, plain = load_control()
+check(steps == [10000, 20000, 40000, 50000, 50000], f"airtime of the computer does not rise on a quiet channel: {steps}")
+check(dropped == (5000, True) and held == 5000, f"airtime of the computer does not fall back with traffic: {dropped} {held}")
+check(plain == 5000, "airtime changes although no upper limit is set")
 
 
 def both_queries():

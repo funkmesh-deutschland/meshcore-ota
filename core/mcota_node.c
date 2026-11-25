@@ -1284,8 +1284,9 @@ static void on_part(mcota_node_t *n, const uint8_t *p, uint32_t len) {
     n->settings_asks = 0;
   }
   copy(n->settings_in + index * MCOTA_CHUNK, p + 11u, body);
+  if (!(n->settings_in_mask & (1u << index))) n->settings_asks = 0;
   n->settings_in_mask |= 1u << index;
-  n->settings_ask_at = now_ms(n) + 5000u + rnd(n, interval_ms(n) / 4u + 1u);
+  n->settings_ask_at = now_ms(n) + quiet_ms(n) + rnd(n, interval_ms(n) + 1u);
   if (n->settings_in_mask != full_mask(size)) return;
   if (!mcota_node_settings_take(n, n->settings_in, size)) {
     n->settings_in_rev = 0;
