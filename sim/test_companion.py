@@ -144,7 +144,56 @@ hello[:] = [b"L2\x08\x00" + bytes.fromhex("77010203") + bytes.fromhex(key_line.s
             + struct.pack("<I", len(old_image)) + hashlib.sha256(old_image).digest()[:8] + b"1.0.0"]
 sent.clear()
 asked.clear()
-out = run(["--dir", work, "update", "--serial", port, "--test", "--offline"], lambda: 3 in mcota_kinds(True))
+import base64
+import json
+import socket
+import urllib.error
+import urllib.request
+probe = socket.socket()
+probe.bind(("127.0.0.1", 0))
+web_port = probe.getsockname()[1]
+probe.close()
+web = {}
+
+
+def web_checked():
+    if 3 not in mcota_kinds(True):
+        return False
+    base = f"http://127.0.0.1:{web_port}"
+    auth = {"Authorization": "Basic " + base64.b64encode(b"user:open sesame").decode()}
+    try:
+        try:
+            urllib.request.urlopen(base + "/api/state", timeout=3)
+            web["open"] = True
+        except urllib.error.HTTPError as error:
+            web["open"] = error.code != 401
+        web["state"] = json.load(urllib.request.urlopen(urllib.request.Request(base + "/api/state", headers=auth), timeout=3))
+        web["page"] = urllib.request.urlopen(urllib.request.Request(base + "/", headers=auth), timeout=3).read()
+        body = json.dumps({"id": "99887766", "name": "Added by hand", "lat": 51.5, "lon": 7.5}).encode()
+        web["saved"] = json.load(urllib.request.urlopen(urllib.request.Request(base + "/api/repeater", data=body, headers=dict(auth, **{"Content-Type": "application/json"})), timeout=3))
+        try:
+            urllib.request.urlopen(urllib.request.Request(base + "/api/repeater", data=b'{"id": "xyz"}', headers=dict(auth, **{"Content-Type": "application/json"})), timeout=3)
+            web["refused"] = False
+        except urllib.error.HTTPError as error:
+            web["refused"] = error.code == 400
+        web["file"] = json.load(open(os.path.join(work, "repeaters.json")))
+    except Exception as error:
+        web["error"] = repr(error)
+    return True
+
+
+out = run(["--dir", work, "update", "--serial", port, "--test", "--offline", "--plain", "--web", str(web_port), "--web-password", "open sesame"], web_checked)
+check("error" not in web, f"web interface failed: {web.get('error')}")
+if "state" in web:
+    state = web["state"]
+    mast = next((r for r in state["repeaters"] if r["id"] == "77010203"), None)
+    check(web["open"] is False, "the web interface answers without the password")
+    check(state["companion"] and state["companion"]["name"] == "Testcompanion" and state["airtime"]["sent"] > 0, "web state lacks the companion or the airtime")
+    check(mast is not None and mast["name"] == "Mast North" and mast["state"] == "loading" and mast["progress"] and mast["via"] and mast["hops"] == 2, f"web state of the repeater is wrong: {mast}")
+    check(any(l["kind"] == "data" and l["to"] == "77010203" for l in state["links"]) and any(l["kind"] == "route" for l in state["links"]), "web state lacks the links")
+    check(state["packages"] and state["packages"][0]["to"] == "v1.0.1+1-test", "web state lacks the offered update")
+    check(b"MeshCore" in web.get("page", b""), "the page is not served")
+    check(web.get("saved") == {"ok": True} and web.get("file", {}).get("99887766", {}).get("lat") == 51.5 and web.get("refused"), "a repeater cannot be added through the web interface")
 kinds = [p[2] for _, _, p in sent if p[:2] == b"L2"]
 check(7 in kinds, "query for repeaters was not sent")
 check(1 in kinds, "no offer follows the hello of the repeater")

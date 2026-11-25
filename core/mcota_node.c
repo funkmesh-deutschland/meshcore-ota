@@ -228,6 +228,7 @@ static void set_complete(mcota_node_t *n) {
   n->state = MCOTA_NODE_COMPLETE;
   n->busy_at = now_ms(n);
   n->apply_jitter = rnd(n, n->cfg.apply_idle_ms + 1u);
+  mcota_node_announce(n);
 }
 
 static void scan_pages(mcota_node_t *n) {
@@ -294,6 +295,16 @@ static bool slot_head(const mcota_node_t *n, uint32_t base, uint32_t *len, uint3
   return get32(head) == MCOTA_STORE_MAGIC && *len >= MCOTA_MANIFEST_HEAD && *len <= MCOTA_MANIFEST_MAX && 8u + *len <= slot_size(n);
 }
 
+static bool carries(const mcota_node_t *n) {
+  return n->cfg.carry && n->cfg.store && slot_count(n) == MCOTA_SLOTS;
+}
+
+static bool fits_here(mcota_node_t *n, const mcota_manifest_t *m) {
+  uint32_t room = n->cfg.layout.slot_pages * MCOTA_PAGE_SIZE;
+  if (!board_matches(n, m->board) || m->new_size > room || m->old_size > room) return false;
+  return same(running_hash(n, m->new_size), m->new_hash, 32u) || same(running_hash(n, m->old_size), m->old_hash, 32u);
+}
+
 static void scan_archives(mcota_node_t *n) {
   const mcota_flash_t *f = store_flash(n);
   uint32_t k, used = 0, i;
@@ -310,7 +321,7 @@ static void scan_archives(mcota_node_t *n) {
     f->read(f->ctx, base + 8u, n->work, len);
     if (!mcota_manifest_parse(n->work, len, &m)) continue;
     key = key_index(n, m.key_id);
-    if (key < 0 || !board_matches(n, m.board)) continue;
+    if (key < 0 || (!board_matches(n, m.board) && !carries(n))) continue;
     if (!n->cfg.verify(n->cfg.ctx, n->cfg.keys[key], m.signature, n->work, len - MCOTA_MANIFEST_SIG)) continue;
     marks = base + 8u + align4(len);
     for (i = 0; i < m.pages; i++) {
@@ -330,9 +341,26 @@ static void scan_archives(mcota_node_t *n) {
     copy(a->campaign, id, 8u);
     copy(a->key_id, m.key_id, 8u);
     copy(a->old_hash, m.old_hash, 8u);
+    board_hash(m.board, a->board);
     copy((uint8_t *)a->version, (const uint8_t *)m.version, 16u);
     used++;
   }
+}
+
+static void release_carried(mcota_node_t *n) {
+  n->has_manifest = false;
+  n->foreign = false;
+  n->cand_active = false;
+  n->provider_set = false;
+  n->state = MCOTA_NODE_IDLE;
+  n->have = 0;
+  n->serve_count = 0;
+  n->stored_blocks = 0;
+  reset_transfer(n);
+  scan_archives(n);
+  n->offer_interval = n->cfg.offer_min_ms;
+  n->offer_at = now_ms(n) + rnd(n, n->cfg.offer_min_ms / 2u + 1u);
+  mcota_node_announce(n);
 }
 
 static bool adopt(mcota_node_t *n, const uint8_t *raw, uint32_t len, bool from_store) {
@@ -340,20 +368,25 @@ static bool adopt(mcota_node_t *n, const uint8_t *raw, uint32_t len, bool from_s
   mcota_manifest_t m;
   uint8_t id[32], head[8];
   uint32_t first, avail, need_head, need_all, i, seq = 0;
-  bool keep = false, consumed = false;
+  bool keep = false, consumed = false, foreign;
   int key;
   if (!mcota_manifest_parse(raw, len, &m)) return false;
   key = key_index(n, m.key_id);
-  if (key < 0 || !board_matches(n, m.board)) return false;
-  if (m.pages > n->cfg.layout.slot_pages || swap_pages(&m) > n->cfg.layout.slot_pages) return false;
+  if (key < 0) return false;
+  foreign = !fits_here(n, &m) || (!from_store && n->cand_active && n->cand_foreign);
+  if (foreign && (from_store || !carries(n))) return false;
+  if (!foreign && (m.pages > n->cfg.layout.slot_pages || swap_pages(&m) > n->cfg.layout.slot_pages)) return false;
   if (!n->cfg.verify(n->cfg.ctx, n->cfg.keys[key], m.signature, raw, len - MCOTA_MANIFEST_SIG)) return false;
 
   if (raw != n->manifest_raw) copy(n->manifest_raw, raw, len);
   mcota_manifest_parse(n->manifest_raw, len, &n->manifest);
+  n->foreign = foreign;
 
-  if (same(running_hash(n, n->manifest.new_size), n->manifest.new_hash, 32u)) {
+  if (foreign) {
+    n->state = MCOTA_NODE_FETCHING;
+  } else if (same(running_hash(n, n->manifest.new_size), n->manifest.new_hash, 32u)) {
     n->state = MCOTA_NODE_APPLIED;
-  } else if (!same(running_hash(n, n->manifest.old_size), n->manifest.old_hash, 32u)) {
+  } else if (n->cfg.build != 0u && n->manifest.build <= n->cfg.build) {
     n->has_manifest = false;
     n->state = MCOTA_NODE_IDLE;
     return false;
@@ -420,8 +453,9 @@ static bool adopt(mcota_node_t *n, const uint8_t *raw, uint32_t len, bool from_s
   n->can_store = need_head <= avail;
   n->can_serve = need_all <= avail && !consumed;
   if (n->cfg.store && from_store) keep = true;
-  if (n->cfg.compact && !n->can_serve && n->state != MCOTA_NODE_APPLIED) {
+  if ((n->cfg.compact || n->foreign) && !n->can_serve && n->state != MCOTA_NODE_APPLIED) {
     n->has_manifest = false;
+    n->foreign = false;
     n->state = MCOTA_NODE_IDLE;
     return false;
   }
@@ -449,7 +483,11 @@ static bool adopt(mcota_node_t *n, const uint8_t *raw, uint32_t len, bool from_s
 
   map_zero(n->have_map);
   n->have = 0;
-  if (n->state == MCOTA_NODE_APPLIED) {
+  if (n->foreign) {
+    copy(n->have_map, n->serve_map, MCOTA_MAP_BYTES);
+    n->have = n->serve_count;
+    if (n->have >= n->manifest.pages) { release_carried(n); return true; }
+  } else if (n->state == MCOTA_NODE_APPLIED) {
     for (i = 0; i < n->manifest.pages; i++) map_set(n->have_map, i);
     n->have = n->manifest.pages;
   } else if (n->state == MCOTA_NODE_FETCHING) {
@@ -463,6 +501,7 @@ static bool adopt(mcota_node_t *n, const uint8_t *raw, uint32_t len, bool from_s
   n->seek_at = now_ms(n) + rnd(n, n->cfg.offer_min_ms / 2u + 1u);
   ask_soon(n, quiet_ms(n) / 4u);
   n->wait_ms += quiet_ms(n) / 4u;
+  if (!from_store && n->state == MCOTA_NODE_FETCHING) mcota_node_announce(n);
   return true;
 }
 
@@ -506,6 +545,77 @@ static void load_store(mcota_node_t *n) {
   }
 }
 
+static bool settings_valid(const mcota_node_t *n, const uint8_t *blob, uint32_t len, uint32_t *rev) {
+  int key;
+  if (len < MCOTA_SETTINGS_HEAD + MCOTA_MANIFEST_SIG || len > MCOTA_SETTINGS_MAX) return false;
+  if (get32(blob) != MCOTA_SETTINGS_MAGIC || blob[4] != 1u) return false;
+  key = key_index(n, blob + 12u);
+  if (key < 0) return false;
+  if (!n->cfg.verify(n->cfg.ctx, n->cfg.keys[key], blob + len - MCOTA_MANIFEST_SIG, blob, len - MCOTA_MANIFEST_SIG)) return false;
+  *rev = get32(blob + 8u);
+  return true;
+}
+
+static void settings_restore(mcota_node_t *n) {
+  uint32_t len, rev;
+  if (!n->cfg.settings_load) return;
+  len = n->cfg.settings_load(n->cfg.ctx, n->settings_in, MCOTA_SETTINGS_MAX);
+  if (len == 0u || !settings_valid(n, n->settings_in, len, &rev) || rev <= n->cfg.settings_base) return;
+  copy(n->settings, n->settings_in, len);
+  n->settings_len = len;
+  n->settings_rev = rev;
+  n->settings_note_due = n->cfg.settings_note_ms != 0u;
+  n->settings_note_at = n->cfg.now_ms(n->cfg.ctx) + n->cfg.settings_note_ms / 2u + n->cfg.random(n->cfg.ctx) % (n->cfg.settings_note_ms / 2u + 1u);
+}
+
+bool mcota_node_settings_take(mcota_node_t *n, const uint8_t *blob, uint32_t len) {
+  uint32_t rev;
+  if (!settings_valid(n, blob, len, &rev) || rev <= n->settings_rev) return false;
+  if (n->cfg.settings_save && !n->cfg.settings_save(n->cfg.ctx, blob, len)) return false;
+  if (blob != n->settings) copy(n->settings, blob, len);
+  n->settings_len = len;
+  n->settings_rev = rev;
+  n->settings_new = true;
+  n->settings_in_rev = 0;
+  n->settings_in_mask = 0;
+  n->settings_send = 0;
+  n->settings_note_due = true;
+  n->settings_note_at = now_ms(n) + 2000u + rnd(n, n->cfg.offer_min_ms / 2u + 1u);
+  return true;
+}
+
+bool mcota_node_settings_new(mcota_node_t *n) {
+  bool value = n->settings_new;
+  n->settings_new = false;
+  return value;
+}
+
+uint32_t mcota_settings_count(const uint8_t *blob, uint32_t len) {
+  uint32_t count = 0;
+  while (mcota_settings_entry(blob, len, count, 0, 0)) count++;
+  return count;
+}
+
+bool mcota_settings_entry(const uint8_t *blob, uint32_t len, uint32_t index, const char **name, const char **commands) {
+  uint32_t pos = MCOTA_SETTINGS_HEAD, end, i;
+  if (len < MCOTA_SETTINGS_HEAD + MCOTA_MANIFEST_SIG) return false;
+  end = len - MCOTA_MANIFEST_SIG;
+  for (i = 0; ; i++) {
+    uint32_t a = pos, b;
+    while (pos < end && blob[pos]) pos++;
+    if (pos >= end || pos == a) return false;
+    b = ++pos;
+    while (pos < end && blob[pos]) pos++;
+    if (pos >= end) return false;
+    pos++;
+    if (i == index) {
+      if (name) *name = (const char *)blob + a;
+      if (commands) *commands = (const char *)blob + b;
+      return true;
+    }
+  }
+}
+
 void mcota_node_init(mcota_node_t *n, const mcota_config_t *cfg) {
   uint32_t i;
   uint8_t *raw = (uint8_t *)n;
@@ -517,6 +627,11 @@ void mcota_node_init(mcota_node_t *n, const mcota_config_t *cfg) {
   n->sequence = (uint8_t)cfg->random(cfg->ctx);
   n->budget_us = 2000000u;
   n->budget_at = cfg->now_ms(cfg->ctx);
+  n->level_ppm = cfg->budget_ppm;
+  n->load_at = n->budget_at;
+  n->load_seen = cfg->traffic_ms ? cfg->traffic_ms(cfg->ctx) : 0u;
+  n->settings_rev = cfg->settings_base;
+  settings_restore(n);
   n->offer_interval = cfg->offer_min_ms;
   n->seek_interval = cfg->offer_min_ms;
   if (cfg->key_set[0] || cfg->key_set[1]) load_store(n);
@@ -524,9 +639,29 @@ void mcota_node_init(mcota_node_t *n, const mcota_config_t *cfg) {
 
 static void refill(mcota_node_t *n) {
   uint32_t now = now_ms(n), elapsed = now - n->budget_at;
-  uint64_t add = (uint64_t)elapsed * n->cfg.budget_ppm / 1000u + n->budget_us;
+  uint64_t add = (uint64_t)elapsed * n->level_ppm / 1000u + n->budget_us;
   n->budget_at = now;
   n->budget_us = add > 10000000u ? 10000000u : (uint32_t)add;
+}
+
+static void adapt(mcota_node_t *n) {
+  uint32_t now = now_ms(n), seen;
+  uint64_t busy;
+  if (!n->cfg.traffic_ms || n->cfg.budget_max_ppm <= n->cfg.budget_ppm) return;
+  seen = n->cfg.traffic_ms(n->cfg.ctx);
+  busy = (uint64_t)(seen - n->load_seen) * 1000000u;
+  if (busy >= (uint64_t)MCOTA_LOAD_BUSY_PPM * MCOTA_LOAD_WINDOW_MS) {
+    refill(n);
+    n->level_ppm = n->cfg.budget_ppm;
+    if (n->budget_us > 2000000u) n->budget_us = 2000000u;
+  } else if (now - n->load_at < MCOTA_LOAD_WINDOW_MS) {
+    return;
+  } else if (busy <= (uint64_t)MCOTA_LOAD_CALM_PPM * MCOTA_LOAD_WINDOW_MS) {
+    refill(n);
+    n->level_ppm = n->level_ppm * 2u > n->cfg.budget_max_ppm ? n->cfg.budget_max_ppm : n->level_ppm * 2u;
+  }
+  n->load_at = now;
+  n->load_seen = seen;
 }
 
 static bool transmit(mcota_node_t *n, const uint8_t *data, uint32_t len, const mcota_route_t *route) {
@@ -608,7 +743,9 @@ static bool send_offer(mcota_node_t *n, uint32_t src) {
   copy(p + i, n->cfg.self, 4u); i += 4u;
   copy(p + i, src_campaign(n, src), 8u); i += 8u;
   copy(p + i, src == 0u ? n->manifest.key_id : n->archives[src - 1u].key_id, 8u); i += 8u;
-  board_hash(n->cfg.board, p + i); i += 4u;
+  if (src == 0u) board_hash(n->manifest.board, p + i);
+  else copy(p + i, n->archives[src - 1u].board, 4u);
+  i += 4u;
   put32(p + i, src == 0u ? n->manifest.old_size : n->archives[src - 1u].old_size); i += 4u;
   copy(p + i, src == 0u ? n->manifest.old_hash : n->archives[src - 1u].old_hash, 8u); i += 8u;
   put16(p + i, pages); i += 2u;
@@ -734,6 +871,22 @@ static bool block_done(mcota_node_t *n, uint32_t index, const uint8_t *data, uin
   uint32_t page_len = mcota_manifest_page_len(&n->manifest, index), i;
   uint8_t h[32];
   bool gained = false;
+  if (n->foreign) {
+    uint32_t addr = n->blocks_base + store_offset(&n->manifest, index);
+    uint8_t zero[4] = { 0, 0, 0, 0 };
+    if (map_get(n->serve_map, index)) return false;
+    if (!flash_equals(n, addr, data, len)) flash_write(n, addr, data, len);
+    if (!flash_equals(n, addr, data, len)) return false;
+    store_flash(n)->write(store_flash(n)->ctx, n->marks_base + 4u * index, zero, 4u);
+    map_set(n->serve_map, index);
+    map_set(n->have_map, index);
+    n->serve_count++;
+    n->stored_blocks++;
+    n->have++;
+    useful(n);
+    if (n->have >= n->manifest.pages) release_carried(n);
+    return true;
+  }
   if (!mcota_block_apply(old_read, n, n->manifest.old_size, data, len, n->work, sizeof(n->work), n->page, page_len, index * MCOTA_PAGE_SIZE)) return false;
   mcota_view_restore(&n->manifest.view, n->page, page_len, index * MCOTA_PAGE_SIZE);
   sha(n->page, page_len, h);
@@ -909,7 +1062,7 @@ static void on_offer(mcota_node_t *n, const uint8_t *p, uint32_t len) {
   uint32_t old_size, pages, manifest_len, mb;
   uint8_t mine[4];
   mcota_route_t route, *via = 0;
-  bool for_me = true;
+  bool for_me = true, own;
   if (len < 41u) return;
   old_size = get32(p + 24u);
   pages = get16(p + 36u);
@@ -936,21 +1089,30 @@ static void on_offer(mcota_node_t *n, const uint8_t *p, uint32_t len) {
     if (for_me && !n->provider_set) { set_provider(n, sender, map, mb, via); ask_soon(n, 2000u); }
     return;
   }
-  if (n->cand_active ? !candidate_idle(n) : !accepts_new_campaign(n)) return;
   if (n->ignored_set && same(campaign, n->ignored, 8u)) return;
   if (key_index(n, key_id) < 0) return;
-  board_hash(n->cfg.board, mine);
-  if (!same(board, mine, 4u)) return;
-  if (old_size == 0u || old_size > n->cfg.layout.slot_pages * MCOTA_PAGE_SIZE) return;
   if (manifest_len < MCOTA_MANIFEST_HEAD || manifest_len > MCOTA_MANIFEST_MAX) return;
-  if (!same(running_hash(n, old_size), old_prefix, 8u)) return;
+  board_hash(n->cfg.board, mine);
+  own = same(board, mine, 4u) && old_size != 0u && old_size <= n->cfg.layout.slot_pages * MCOTA_PAGE_SIZE && same(running_hash(n, old_size), old_prefix, 8u);
+  if (!own && (!carries(n) || via || busy_swapping(n))) return;
+  if (own && !busy_swapping(n) && (n->cand_active ? n->cand_foreign : n->foreign)) {
+    n->foreign = false;
+    n->has_manifest = n->has_manifest && n->state != MCOTA_NODE_FETCHING;
+    if (!n->has_manifest) n->state = MCOTA_NODE_IDLE;
+  } else if (n->cand_active ? !candidate_idle(n) : !accepts_new_campaign(n)) {
+    return;
+  } else if (!own && fetching(n) && !n->foreign) {
+    return;
+  }
   n->cand_active = true;
+  n->cand_foreign = !own;
   n->cand_at = now_ms(n);
   copy(n->cand_campaign, campaign, 8u);
   n->cand_manifest_len = manifest_len;
   n->provider_set = false;
   reset_transfer(n);
   if (for_me) { set_provider(n, sender, map, mb, via); ask_soon(n, 2000u); }
+  if (for_me && via) { n->home = *via; n->home_set = true; }
 }
 
 static void add_repair(mcota_node_t *n, uint32_t src, uint8_t kind, uint32_t index, uint32_t mask) {
@@ -1073,8 +1235,127 @@ static void on_seek(mcota_node_t *n, const uint8_t *p, uint32_t len) {
   n->offer_interval = n->cfg.offer_min_ms;
 }
 
-void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
+static void on_note(mcota_node_t *n, const uint8_t *p, uint32_t len) {
+  uint32_t rev, size, now = now_ms(n);
+  if (len < 18u || key_index(n, p + 4u) < 0) return;
+  rev = get32(p + 12u);
+  size = get16(p + 16u);
+  if (rev > n->settings_rev) {
+    if (size < MCOTA_SETTINGS_HEAD + MCOTA_MANIFEST_SIG || size > MCOTA_SETTINGS_MAX || rev < n->settings_in_rev) return;
+    if (n->settings_in_rev != rev || n->settings_in_len != size) {
+      n->settings_in_rev = rev;
+      n->settings_in_len = size;
+      n->settings_in_mask = 0;
+      n->settings_asks = 0;
+      n->settings_ask_at = now + 1000u + rnd(n, 4000u);
+    }
+  } else if (rev < n->settings_rev && n->settings_len != 0u) {
+    uint32_t t = now + 1000u + rnd(n, n->cfg.offer_min_ms / 2u + 1u);
+    if (!n->settings_note_due || (int32_t)(n->settings_note_at - t) > 0) n->settings_note_at = t;
+    n->settings_note_due = true;
+  } else if (rev == n->settings_rev && n->settings_note_due && n->cfg.settings_note_ms != 0u) {
+    n->settings_note_at = now + n->cfg.settings_note_ms / 2u + rnd(n, n->cfg.settings_note_ms / 2u + 1u);
+  }
+}
+
+static void on_ask(mcota_node_t *n, const uint8_t *p, uint32_t len) {
+  if (len < 20u || n->settings_len == 0u || get32(p + 12u) != n->settings_rev || !same(p + 4u, n->settings + 12u, 8u)) return;
+  if (n->settings_send == 0u) n->settings_send_at = now_ms(n) + rnd(n, 2000u);
+  n->settings_send |= get32(p + 16u) & full_mask(n->settings_len);
+}
+
+static void on_part(mcota_node_t *n, const uint8_t *p, uint32_t len) {
+  uint32_t rev, size, index, body, expect, k;
+  bool known = false;
+  if (len < 11u) return;
+  rev = get32(p + 4u);
+  size = get16(p + 8u);
+  index = p[10];
+  body = len - 11u;
+  for (k = 0; k < MCOTA_KEYS; k++) known = known || (n->cfg.key_set[k] && same(p, n->key_ids[k], 4u));
+  if (!known || rev <= n->settings_rev || rev < n->settings_in_rev) return;
+  if (size < MCOTA_SETTINGS_HEAD + MCOTA_MANIFEST_SIG || size > MCOTA_SETTINGS_MAX || index >= chunks_of(size)) return;
+  expect = index + 1u == chunks_of(size) ? size - index * MCOTA_CHUNK : MCOTA_CHUNK;
+  if (body != expect) return;
+  if (n->settings_in_rev != rev || n->settings_in_len != size) {
+    n->settings_in_rev = rev;
+    n->settings_in_len = size;
+    n->settings_in_mask = 0;
+    n->settings_asks = 0;
+  }
+  copy(n->settings_in + index * MCOTA_CHUNK, p + 11u, body);
+  if (!(n->settings_in_mask & (1u << index))) n->settings_asks = 0;
+  n->settings_in_mask |= 1u << index;
+  n->settings_ask_at = now_ms(n) + quiet_ms(n) + rnd(n, interval_ms(n) + 1u);
+  if (n->settings_in_mask != full_mask(size)) return;
+  if (!mcota_node_settings_take(n, n->settings_in, size)) {
+    n->settings_in_rev = 0;
+    n->settings_in_mask = 0;
+  }
+}
+
+static void settings_step(mcota_node_t *n) {
+  uint8_t p[MCOTA_PACKET_MAX];
+  uint32_t now = now_ms(n), i;
+  if (n->settings_send != 0u && n->settings_len != 0u && (int32_t)(now - n->settings_send_at) >= 0) {
+    uint32_t index = 0, take;
+    while (!(n->settings_send & (1u << index))) index++;
+    take = index + 1u == chunks_of(n->settings_len) ? n->settings_len - index * MCOTA_CHUNK : MCOTA_CHUNK;
+    i = header(n, p, MCOTA_MSG_PART);
+    copy(p + i, n->settings + 12u, 4u); i += 4u;
+    put32(p + i, n->settings_rev); i += 4u;
+    put16(p + i, n->settings_len); i += 2u;
+    p[i++] = (uint8_t)index;
+    copy(p + i, n->settings + index * MCOTA_CHUNK, take);
+    if (transmit(n, p, i + take, 0)) n->settings_send &= ~(1u << index);
+    return;
+  }
+  if (n->settings_in_rev > n->settings_rev && n->settings_in_mask != full_mask(n->settings_in_len) && (int32_t)(now - n->settings_ask_at) >= 0) {
+    if (n->settings_asks >= MCOTA_TRIES) {
+      n->settings_in_rev = 0;
+      n->settings_in_mask = 0;
+      return;
+    }
+    for (i = 0; i < MCOTA_KEYS && !n->cfg.key_set[i]; i++) { }
+    if (i >= MCOTA_KEYS) return;
+    {
+      uint32_t key = i;
+      i = header(n, p, MCOTA_MSG_ASK);
+      copy(p + i, n->cfg.self, 4u); i += 4u;
+      copy(p + i, n->key_ids[key], 8u); i += 8u;
+      put32(p + i, n->settings_in_rev); i += 4u;
+      put32(p + i, full_mask(n->settings_in_len) & ~n->settings_in_mask); i += 4u;
+    }
+    if (transmit(n, p, i, 0)) {
+      n->settings_asks++;
+      n->settings_ask_at = now + interval_ms(n) / 2u + rnd(n, interval_ms(n) / 2u + 1u);
+    }
+    return;
+  }
+  if (n->settings_note_due && n->settings_len != 0u && (int32_t)(now - n->settings_note_at) >= 0) {
+    i = header(n, p, MCOTA_MSG_NOTE);
+    copy(p + i, n->cfg.self, 4u); i += 4u;
+    copy(p + i, n->settings + 12u, 8u); i += 8u;
+    put32(p + i, n->settings_rev); i += 4u;
+    put16(p + i, n->settings_len); i += 2u;
+    if (transmit(n, p, i, 0)) {
+      n->settings_note_due = n->cfg.settings_note_ms != 0u;
+      n->settings_note_at = now + n->cfg.settings_note_ms / 2u + rnd(n, n->cfg.settings_note_ms / 2u + 1u);
+    }
+  }
+}
+
+static void send_pong(mcota_node_t *n) {
   uint8_t out[16];
+  uint32_t i;
+  if (!n->pong_due) return;
+  if (now_ms(n) - n->pong_at > 30000u) { n->pong_due = false; return; }
+  i = header(n, out, MCOTA_MSG_PONG);
+  copy(out + i, n->pong, 12u);
+  if (transmit(n, out, i + 12u, 0)) n->pong_due = false;
+}
+
+void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
   const uint8_t *body = data + MCOTA_HEADER;
   uint32_t i, body_len;
   if (len < MCOTA_HEADER || data[0] != 'L' || data[1] != '2') return;
@@ -1085,6 +1366,9 @@ void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
     case MCOTA_MSG_REQUEST: on_request(n, body, body_len); break;
     case MCOTA_MSG_DATA: on_data(n, body, body_len); break;
     case MCOTA_MSG_SEEK: on_seek(n, body, body_len); break;
+    case MCOTA_MSG_NOTE: on_note(n, body, body_len); break;
+    case MCOTA_MSG_ASK: on_ask(n, body, body_len); break;
+    case MCOTA_MSG_PART: on_part(n, body, body_len); break;
     case MCOTA_MSG_QUERY:
       if (body_len < 12u || n->cfg.image_size == 0u || key_index(n, body + 4u) < 0) break;
       if (body_len > 12u) {
@@ -1092,10 +1376,14 @@ void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
         if (!read_route(body + 12u, body_len - 12u, &back) || !same(body + 12u, n->cfg.self, 4u)) break;
         n->hello_route = back;
         n->hello_routed = true;
+        n->home = back;
+        n->home_set = true;
         n->hello_key = (uint8_t)key_index(n, body + 4u);
         n->hello_due = true;
         n->hello_at = now_ms(n) + 500u + rnd(n, 2000u);
       } else if (!n->hello_due) {
+        n->home.hops = 0u;
+        n->home_set = true;
         n->hello_routed = false;
         n->hello_key = (uint8_t)key_index(n, body + 4u);
         n->hello_due = true;
@@ -1104,11 +1392,12 @@ void mcota_node_receive(mcota_node_t *n, const uint8_t *data, uint32_t len) {
       break;
     case MCOTA_MSG_PING:
       if (body_len < 8u) break;
-      i = header(n, out, MCOTA_MSG_PONG);
-      copy(out + i, body, 4u); i += 4u;
-      copy(out + i, n->cfg.self, 4u); i += 4u;
-      copy(out + i, body + 4u, 4u); i += 4u;
-      transmit(n, out, i, 0);
+      copy(n->pong, body, 4u);
+      copy(n->pong + 4u, n->cfg.self, 4u);
+      copy(n->pong + 8u, body + 4u, 4u);
+      n->pong_due = true;
+      n->pong_at = now_ms(n);
+      send_pong(n);
       break;
     case MCOTA_MSG_PONG:
       if (body_len >= 12u && same(body, n->cfg.self, 4u) && n->ping_nonce != 0u && get32(body + 8u) == n->ping_nonce) n->pong_seen = true;
@@ -1233,7 +1522,7 @@ static bool serve_step(mcota_node_t *n) {
 
 static uint32_t same_next(const mcota_node_t *n) {
   uint32_t i;
-  if (!n->has_manifest || n->state != MCOTA_NODE_FETCHING || n->cfg.compact) return MCOTA_MAX_PAGES;
+  if (!n->has_manifest || n->state != MCOTA_NODE_FETCHING || n->cfg.compact || n->foreign) return MCOTA_MAX_PAGES;
   for (i = 0; i < n->manifest.pages; i++) {
     if (mcota_manifest_same(&n->manifest, i) && !map_get(n->have_map, i)) return i;
   }
@@ -1256,9 +1545,30 @@ static bool copy_same(mcota_node_t *n) {
   return true;
 }
 
+uint32_t mcota_node_apply_in_ms(mcota_node_t *n) {
+  uint32_t wait, idle;
+  if (!n->has_manifest || n->state != MCOTA_NODE_COMPLETE || !(n->manifest.flags & MCOTA_MANIFEST_AUTO_APPLY) || mcota_node_needs_command(n)) return 0xFFFFFFFFu;
+  if (n->cfg.compact && n->plan == MCOTA_PLAN_NONE) return 0xFFFFFFFFu;
+  wait = (n->survives ? n->cfg.apply_idle_ms : n->cfg.apply_long_ms) + n->apply_jitter;
+  idle = now_ms(n) - n->busy_at;
+  return idle >= wait ? 0u : wait - idle;
+}
+
+void mcota_node_announce(mcota_node_t *n) {
+  uint32_t i;
+  if (n->hello_due || n->cfg.image_size == 0u) return;
+  for (i = 0; i < MCOTA_KEYS && !n->cfg.key_set[i]; i++) { }
+  if (i >= MCOTA_KEYS) return;
+  n->hello_key = (uint8_t)i;
+  n->hello_routed = n->home_set && n->home.hops > 0u;
+  if (n->hello_routed) n->hello_route = n->home;
+  n->hello_due = true;
+  n->hello_at = now_ms(n) + 1000u + rnd(n, n->cfg.offer_min_ms / 4u + 1u);
+}
+
 static bool send_hello(mcota_node_t *n) {
-  uint8_t p[64];
-  uint32_t i = header(n, p, MCOTA_MSG_HELLO), k;
+  uint8_t p[MCOTA_PACKET_MAX];
+  uint32_t i = header(n, p, MCOTA_MSG_HELLO), k, at, wait;
   copy(p + i, n->cfg.self, 4u); i += 4u;
   copy(p + i, n->key_ids[n->hello_key], 8u); i += 8u;
   board_hash(n->cfg.board, p + i); i += 4u;
@@ -1273,14 +1583,42 @@ static bool send_hello(mcota_node_t *n) {
     bool known = mcota_request_read(n->cfg.flash, &n->cfg.layout, &job);
     for (k = 0; k < 4u; k++) p[i++] = known ? job.new_hash[k] : 0u;
   }
+  put32(p + i, n->settings_rev); i += 4u;
+  p[i++] = (uint8_t)(n->level_ppm / 1000u > 255u ? 255u : n->level_ppm / 1000u);
+  for (k = 0; k < 4u; k++) p[i++] = n->has_manifest ? n->campaign[k] : n->cand_active ? n->cand_campaign[k] : 0u;
+  put16(p + i, n->has_manifest ? n->have : 0u); i += 2u;
+  put16(p + i, n->has_manifest ? n->manifest.pages : 0u); i += 2u;
+  for (k = 0; k < 4u; k++) p[i++] = n->provider_set && (n->cand_active || fetching(n) || filling(n)) ? n->provider[k] : 0u;
+  wait = mcota_node_apply_in_ms(n);
+  put16(p + i, wait == 0xFFFFFFFFu ? 0xFFFFu : (wait + 59999u) / 60000u > 0xFFFEu ? 0xFFFEu : (wait + 59999u) / 60000u); i += 2u;
+  p[i++] = (uint8_t)(((n->has_manifest ? n->foreign : n->cand_active && n->cand_foreign) ? MCOTA_HELLO_CARRYING : 0u)
+                     | (mcota_node_needs_command(n) ? MCOTA_HELLO_NEEDS_COMMAND : 0u) | (mcota_node_no_rollback(n) ? MCOTA_HELLO_NO_ROLLBACK : 0u));
+  at = i++;
+  p[at] = 0u;
+  for (k = 0; k < MCOTA_SLOTS - 1u; k++) {
+    if (!n->archives[k].used) continue;
+    copy(p + i, n->archives[k].campaign, 4u); i += 4u;
+    p[at]++;
+  }
+  at = i++;
+  p[at] = 0u;
+  for (k = 0; k < MCOTA_PEERS && p[at] < MCOTA_HELLO_PEERS; k++) {
+    if (!n->peers[k].used) continue;
+    copy(p + i, n->peers[k].id, 4u); i += 4u;
+    put16(p + i, mcota_node_peer_wants(n, k)); i += 2u;
+    p[at]++;
+  }
   return transmit(n, p, i, n->hello_routed ? &n->hello_route : 0);
 }
 
 void mcota_node_loop(mcota_node_t *n) {
   uint32_t now = now_ms(n), i;
 
+  adapt(n);
+  send_pong(n);
   if (copy_same(n)) return;
   if (n->hello_due && (int32_t)(now - n->hello_at) >= 0 && send_hello(n)) n->hello_due = false;
+  settings_step(n);
 
   for (i = 0; i < MCOTA_PEERS; i++) {
     if (n->peers[i].used && now - n->peers[i].at > 12u * quiet_ms(n)) n->peers[i].used = false;
@@ -1322,7 +1660,8 @@ void mcota_node_loop(mcota_node_t *n) {
 }
 
 bool mcota_node_pending(const mcota_node_t *n) {
-  return n->hello_due || n->cand_active || same_next(n) < MCOTA_MAX_PAGES;
+  return n->hello_due || n->pong_due || n->cand_active || same_next(n) < MCOTA_MAX_PAGES || n->settings_send != 0u
+         || (n->settings_in_rev > n->settings_rev && n->settings_asks == 0u);
 }
 
 bool mcota_node_seed_manifest(mcota_node_t *n, const uint8_t *raw, uint32_t len) {
@@ -1401,6 +1740,7 @@ uint32_t mcota_node_peer_wants(const mcota_node_t *n, uint32_t peer) {
 void mcota_node_drop(mcota_node_t *n) {
   if (n->has_manifest && n->can_store) store_flash(n)->erase(store_flash(n)->ctx, n->store_base);
   n->has_manifest = false;
+  n->foreign = false;
   n->cand_active = false;
   n->provider_set = false;
   n->state = MCOTA_NODE_IDLE;

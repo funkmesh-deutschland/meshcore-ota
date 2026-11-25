@@ -28,6 +28,20 @@ static bool h_verify(void *ctx, const uint8_t *pub, const uint8_t *sig, const ui
   (void)ctx;
   return ed25519_verify(sig, msg, len, pub) == 1;
 }
+static uint8_t saved[MCOTA_SETTINGS_MAX];
+static uint32_t saved_len;
+static uint32_t h_load(void *ctx, uint8_t *out, uint32_t max) {
+  (void)ctx;
+  if (saved_len > max) return 0;
+  memcpy(out, saved, saved_len);
+  return saved_len;
+}
+static bool h_save(void *ctx, const uint8_t *data, uint32_t len) {
+  (void)ctx;
+  memcpy(saved, data, len);
+  saved_len = len;
+  return true;
+}
 static bool h_send(void *ctx, const uint8_t *data, uint32_t len, const mcota_route_t *route) {
   uint32_t i;
   (void)ctx;
@@ -83,6 +97,9 @@ int main(int argc, char **argv) {
   cfg.apply_idle_ms = 300000u;
   cfg.apply_long_ms = 3600000u;
   cfg.image_size = (uint32_t)n;
+  cfg.settings_load = h_load;
+  cfg.settings_save = h_save;
+  cfg.settings_note_ms = 600000u;
   strncpy(cfg.tag, "1.0.0", 15);
   mcota_node_init(&node, &cfg);
   setvbuf(stdout, NULL, _IOLBF, 0);
@@ -103,7 +120,8 @@ int main(int argc, char **argv) {
     } else if (line[0] == 'Q') {
       fh = fopen(argv[4], "wb");
       if (fh) { fwrite(mem + cfg.layout.slot_b, 1, SLOT_PAGES * MCOTA_PAGE_SIZE, fh); fclose(fh); }
-      printf("STATE %d %u %u %u %d %u %u\n", (int)node.state, node.have, node.has_manifest ? node.manifest.pages : 0u, node.bundles, (int)node.pong_seen, node.requests_sent, node.seeks_sent);
+      printf("STATE %d %u %u %u %d %u %u %u %u\n", (int)node.state, node.have, node.has_manifest ? node.manifest.pages : 0u, node.bundles, (int)node.pong_seen, node.requests_sent, node.seeks_sent,
+             (unsigned)node.settings_rev, (unsigned)node.tx_packets);
     }
   }
   return 0;

@@ -23,6 +23,14 @@
 #define MCOTA_TRIES 6u
 #define MCOTA_SLOTS 3u
 #define MCOTA_SLOT_MIN (8u * MCOTA_PAGE_SIZE)
+#define MCOTA_LOAD_WINDOW_MS 60000u
+#define MCOTA_LOAD_BUSY_PPM 20000u
+#define MCOTA_LOAD_CALM_PPM 5000u
+#define MCOTA_SETTINGS_PARTS 8u
+#define MCOTA_SETTINGS_MAX (MCOTA_SETTINGS_PARTS * MCOTA_CHUNK)
+#define MCOTA_SETTINGS_HEAD 20u
+#define MCOTA_SETTINGS_MAGIC 0x4746434Du
+#define MCOTA_HELLO_PEERS 4u
 
 #define MCOTA_MSG_OFFER 1u
 #define MCOTA_MSG_REQUEST 2u
@@ -32,6 +40,13 @@
 #define MCOTA_MSG_SEEK 6u
 #define MCOTA_MSG_QUERY 7u
 #define MCOTA_MSG_HELLO 8u
+#define MCOTA_MSG_NOTE 9u
+#define MCOTA_MSG_ASK 10u
+#define MCOTA_MSG_PART 11u
+
+#define MCOTA_HELLO_CARRYING 1u
+#define MCOTA_HELLO_NEEDS_COMMAND 2u
+#define MCOTA_HELLO_NO_ROLLBACK 4u
 
 #define MCOTA_OFFER_ROUTED 1u
 
@@ -58,6 +73,14 @@ typedef struct {
   uint8_t keys[MCOTA_KEYS][32];
   bool key_set[MCOTA_KEYS];
   uint32_t budget_ppm;
+  uint32_t budget_max_ppm;
+  uint32_t (*traffic_ms)(void *ctx);
+  uint32_t build;
+  bool carry;
+  uint32_t settings_base;
+  uint32_t settings_note_ms;
+  uint32_t (*settings_load)(void *ctx, uint8_t *out, uint32_t max);
+  bool (*settings_save)(void *ctx, const uint8_t *data, uint32_t len);
   uint32_t offer_min_ms;
   uint32_t offer_max_ms;
   uint32_t apply_idle_ms;
@@ -112,6 +135,7 @@ typedef struct {
   uint8_t campaign[8];
   uint8_t key_id[8];
   uint8_t old_hash[8];
+  uint8_t board[4];
   char version[16];
 } mcota_archive_t;
 
@@ -121,6 +145,7 @@ typedef struct {
 
   mcota_node_state_t state;
   bool has_manifest;
+  bool foreign;
   bool can_store;
   bool can_serve;
   bool survives;
@@ -138,6 +163,7 @@ typedef struct {
   uint32_t blocks_base;
 
   bool cand_active;
+  bool cand_foreign;
   uint8_t cand_campaign[8];
   uint32_t cand_manifest_len;
   uint32_t cand_at;
@@ -184,6 +210,25 @@ typedef struct {
   uint32_t budget_us;
   uint32_t budget_at;
   uint32_t sent_ms;
+  uint32_t level_ppm;
+  uint32_t own_air_ms;
+  uint32_t load_at;
+  uint32_t load_seen;
+
+  uint8_t settings[MCOTA_SETTINGS_MAX];
+  uint32_t settings_len;
+  uint32_t settings_rev;
+  bool settings_new;
+  uint8_t settings_in[MCOTA_SETTINGS_MAX];
+  uint32_t settings_in_rev;
+  uint32_t settings_in_len;
+  uint32_t settings_in_mask;
+  uint32_t settings_ask_at;
+  uint32_t settings_asks;
+  uint32_t settings_send;
+  uint32_t settings_send_at;
+  bool settings_note_due;
+  uint32_t settings_note_at;
 
   bool hash_cached;
   uint32_t hash_size;
@@ -192,6 +237,9 @@ typedef struct {
   uint8_t sequence;
   uint32_t ping_nonce;
   bool pong_seen;
+  bool pong_due;
+  uint32_t pong_at;
+  uint8_t pong[12];
   uint32_t rx_packets;
   uint32_t bundles;
   uint32_t tx_packets;
@@ -199,6 +247,8 @@ typedef struct {
   uint32_t seeks_sent;
   bool hello_due;
   bool hello_routed;
+  bool home_set;
+  mcota_route_t home;
   uint32_t hello_at;
   uint8_t hello_key;
   mcota_route_t hello_route;
@@ -213,6 +263,12 @@ bool mcota_node_seed_block(mcota_node_t *n, uint32_t index, const uint8_t *data,
 bool mcota_node_apply(mcota_node_t *n);
 bool mcota_node_apply_due(mcota_node_t *n);
 bool mcota_node_pending(const mcota_node_t *n);
+void mcota_node_announce(mcota_node_t *n);
+uint32_t mcota_node_apply_in_ms(mcota_node_t *n);
+bool mcota_node_settings_new(mcota_node_t *n);
+bool mcota_node_settings_take(mcota_node_t *n, const uint8_t *blob, uint32_t len);
+uint32_t mcota_settings_count(const uint8_t *blob, uint32_t len);
+bool mcota_settings_entry(const uint8_t *blob, uint32_t len, uint32_t index, const char **name, const char **commands);
 bool mcota_node_no_rollback(const mcota_node_t *n);
 bool mcota_node_needs_command(const mcota_node_t *n);
 bool mcota_node_runs_requested(mcota_node_t *n);

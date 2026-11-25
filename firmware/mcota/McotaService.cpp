@@ -14,6 +14,15 @@ extern "C" {
 #ifndef MCOTA_BUDGET_PPM
 #define MCOTA_BUDGET_PPM 5000
 #endif
+#ifndef MCOTA_BUDGET_MAX_PPM
+#define MCOTA_BUDGET_MAX_PPM 50000
+#endif
+#ifndef MCOTA_BUILD
+#define MCOTA_BUILD 0
+#endif
+#ifndef MCOTA_PRESET_REVISION
+#define MCOTA_PRESET_REVISION 0
+#endif
 #ifndef MCOTA_BOARD
 #error "MCOTA_BOARD missing"
 #endif
@@ -58,6 +67,9 @@ static bool h_send(void *, const uint8_t *data, uint32_t len, const mcota_route_
 }
 static bool h_verify(void *, const uint8_t *pub, const uint8_t *sig, const uint8_t *msg, uint32_t len) { return host->mcotaVerify(pub, sig, msg, len); }
 static uint32_t h_random(void *) { return host->mcotaRandom(); }
+static uint32_t h_traffic(void *) { return host->mcotaTraffic(); }
+static uint32_t h_load(void *, uint8_t *out, uint32_t max) { return host->mcotaLoad(out, max); }
+static bool h_save(void *, const uint8_t *data, uint32_t len) { return host->mcotaSave(data, len); }
 
 #ifdef MCOTA_BUILTIN_KEY
 static const uint8_t builtin_key[32] = MCOTA_BUILTIN_KEY;
@@ -144,17 +156,33 @@ static void save_keys() {
   mcota_port_keys_write(image);
 }
 
+static uint32_t preset_count() {
+  if (node.settings_len) return mcota_settings_count(node.settings, node.settings_len);
+  return MCOTA_PRESET_COUNT;
+}
+
+static const char *preset_text(uint32_t index, bool commands) {
+  const char *name = "", *list = "";
+  if (node.settings_len) {
+    mcota_settings_entry(node.settings, node.settings_len, index, &name, &list);
+    return commands ? list : name;
+  }
 #if MCOTA_PRESET_COUNT > 0
+  if (index < MCOTA_PRESET_COUNT) return commands ? preset_commands[index] : preset_names[index];
+#endif
+  return "";
+}
+
 static uint32_t preset_hash(uint32_t index) {
   uint32_t h = 2166136261u;
-  for (const char *p = preset_names[index]; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
-  for (const char *p = preset_commands[index]; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+  for (const char *p = preset_text(index, false); *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+  for (const char *p = preset_text(index, true); *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
   return h ? h : 1u;
 }
 
 static int preset_index(const char *name) {
-  for (uint32_t i = 0; i < MCOTA_PRESET_COUNT; i++) {
-    if (strcmp(preset_names[i], name) == 0) return (int)i;
+  for (uint32_t i = 0; i < preset_count(); i++) {
+    if (strcmp(preset_text(i, false), name) == 0) return (int)i;
   }
   return -1;
 }
@@ -165,7 +193,7 @@ static uint32_t preset_active() {
 }
 
 static void preset_apply(uint32_t index) {
-  const char *p = preset_commands[index];
+  const char *p = preset_text(index, true);
   preset_failed = 0;
   while (*p) {
     char line[96], out[256];
@@ -182,11 +210,10 @@ static void preset_apply(uint32_t index) {
     if (memcmp(out, "OK", 2) != 0 && memcmp(out, "ok", 2) != 0) preset_failed++;
   }
   memset(preset_name, 0, sizeof(preset_name));
-  strncpy(preset_name, preset_names[index], PRESET_NAME - 1u);
+  strncpy(preset_name, preset_text(index, false), PRESET_NAME - 1u);
   preset_applied = preset_hash(index);
   save_keys();
 }
-#endif
 
 static void start_node() {
   mcota_node_init(&node, &cfg);
@@ -195,6 +222,7 @@ static void start_node() {
 static void confirm() {
   mcota_confirm(cfg.flash, &cfg.layout);
   if (mcota_port_confirmed(&node)) start_node();
+  mcota_node_announce(&node);
 }
 
 void McotaService::begin(McotaHost *h, const uint8_t *self_pub_key) {
@@ -210,12 +238,21 @@ void McotaService::begin(McotaHost *h, const uint8_t *self_pub_key) {
   memcpy(cfg.self, self_pub_key, 4);
   strncpy(cfg.board, MCOTA_BOARD, sizeof(cfg.board) - 1);
   cfg.budget_ppm = MCOTA_BUDGET_PPM;
+  cfg.budget_max_ppm = MCOTA_BUDGET_MAX_PPM;
+  cfg.traffic_ms = h_traffic;
+  cfg.build = MCOTA_BUILD;
+  cfg.carry = true;
+  cfg.settings_base = MCOTA_PRESET_REVISION;
+  cfg.settings_load = h_load;
+  cfg.settings_save = h_save;
 #ifdef MCOTA_TEST
+  cfg.settings_note_ms = 600000u;
   cfg.offer_min_ms = 15000u;
   cfg.offer_max_ms = 120000u;
   cfg.apply_idle_ms = 120000u;
   cfg.apply_long_ms = 600000u;
 #else
+  cfg.settings_note_ms = 21600000u;
   cfg.offer_min_ms = 60000u;
   cfg.offer_max_ms = 3600000u;
   cfg.apply_idle_ms = 1800000u;
@@ -225,6 +262,7 @@ void McotaService::begin(McotaHost *h, const uint8_t *self_pub_key) {
   start_node();
   if (mcota_state(cfg.flash, &cfg.layout) == MCOTA_STATE_TRIAL && !mcota_node_runs_requested(&node) && mcota_clear(cfg.flash, &cfg.layout)) start_node();
   if (mcota_port_confirmed(&node)) start_node();
+  if (mcota_state(cfg.flash, &cfg.layout) != MCOTA_STATE_NONE) mcota_node_announce(&node);
   started_at = millis();
   next_ping = started_at + 5000u;
   next_probe = started_at + 15000u;
@@ -252,12 +290,11 @@ void McotaService::loop() {
   if (reboot_at && (int32_t)(now - reboot_at) >= 0) host->mcotaReboot();
   if (mcota_port_busy()) return;
   mcota_node_loop(&node);
-#if MCOTA_PRESET_COUNT > 0
+  if (mcota_node_settings_new(&node)) preset_checked = false;
   if (!preset_checked && now - started_at >= PRESET_AFTER_MS) {
     preset_checked = true;
-    if (!settings_locked && preset_applied != preset_hash(preset_active())) preset_apply(preset_active());
+    if (preset_count() > 0u && !settings_locked && preset_applied != preset_hash(preset_active())) preset_apply(preset_active());
   }
-#endif
 
   if (!reboot_at && mcota_node_apply_due(&node) && !mcota_port_blocked() && mcota_node_apply(&node) && !mcota_port_blocked()) reboot_at = now + 3000u;
 
@@ -309,7 +346,7 @@ static void hex(char *out, const uint8_t *data, uint32_t len) {
 
 static const char *state_name() {
   switch (node.state) {
-    case MCOTA_NODE_FETCHING: return "loading";
+    case MCOTA_NODE_FETCHING: return node.foreign ? "carrying" : "loading";
     case MCOTA_NODE_COMPLETE: return "ready";
     case MCOTA_NODE_APPLIED: return "applied";
     case MCOTA_NODE_FAILED: return "failed";
@@ -362,11 +399,12 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
     bool loading = node.cand_active || (node.has_manifest && node.state == MCOTA_NODE_FETCHING);
     hex(id, node.campaign, 8);
     if (node.provider_set && loading) hex(from, node.provider, 4);
-    snprintf(reply, room, "OK%s fw=%s %s %s %u/%u w=%u old=%u id=%s loader=%s from=%s age=%us budget=%u.%u%% tx=%u rx=%u%s%s%s%s",
+    snprintf(reply, room, "OK%s fw=%s %s %s %u/%u w=%u old=%u id=%s loader=%s from=%s age=%us budget=%u.%u%% air=%u.%u%% cfg=%u tx=%u rx=%u%s%s%s%s",
              mcota_port_blocked() ? " FLASH-BLOCKED" : mcota_port_busy() ? " PAUSED" : "", MCOTA_TAG, state_name(), node.has_manifest ? node.manifest.version : "-", (unsigned)node.have,
              node.has_manifest ? (unsigned)node.manifest.pages : 0u, (unsigned)node.serve_count, (unsigned)mcota_node_archives(&node), node.has_manifest ? id : "-", loader_name(),
              from, (unsigned)((millis() - node.useful_at) / 1000u),
-             (unsigned)(MCOTA_BUDGET_PPM / 10000), (unsigned)(MCOTA_BUDGET_PPM % 10000 / 1000), (unsigned)node.tx_packets, (unsigned)node.rx_packets,
+             (unsigned)(MCOTA_BUDGET_PPM / 10000), (unsigned)(MCOTA_BUDGET_PPM % 10000 / 1000), (unsigned)(node.level_ppm / 10000), (unsigned)(node.level_ppm % 10000 / 1000),
+             (unsigned)node.settings_rev, (unsigned)node.tx_packets, (unsigned)node.rx_packets,
              node.has_manifest && (node.manifest.flags & MCOTA_MANIFEST_AUTO_APPLY) ? " auto" : "",
              mcota_node_no_rollback(&node) ? " no-rollback" : "", mcota_node_needs_command(&node) ? " awaiting-command" : "",
              node.has_manifest && !node.can_serve ? " no-sharing" : cfg.direct ? " direct" : cfg.store ? " ext" : "");
@@ -425,6 +463,11 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
       int n = parse_hex(sub + 5, load_buf + load_len, sizeof(load_buf) - load_len);
       if (n < 0) strcpy(reply, "ERR data");
       else { load_len += (uint32_t)n; sprintf(reply, "OK %u", (unsigned)load_len); }
+    } else if (strcmp(sub, "settings") == 0) {
+      bool ok = mcota_node_settings_take(&node, load_buf, load_len);
+      load_len = 0;
+      if (ok) sprintf(reply, "OK %u", (unsigned)node.settings_rev);
+      else strcpy(reply, "ERR settings rejected (signature or not newer)");
     } else if (strcmp(sub, "manifest") == 0) {
       bool ok = mcota_node_seed_manifest(&node, load_buf, load_len);
       load_len = 0;
@@ -482,25 +525,21 @@ bool McotaService::handleCommand(bool usb, const char *command, char *reply) {
   } else if (strcmp(arg, "pong") == 0) {
     strcpy(reply, node.pong_seen ? "OK reply from MeshCore-OTA neighbour" : neighbour_seen ? "OK reply from repeater" : "OK no reply");
   } else if (strcmp(arg, "preset") == 0) {
-#if MCOTA_PRESET_COUNT > 0
-    int used = snprintf(reply, room, "OK active=%s state=%s lock=%s errors=%u list=", preset_names[preset_active()],
-                        preset_applied == preset_hash(preset_active()) ? "applied" : "pending", settings_locked ? "on" : "off", (unsigned)preset_failed);
-    for (uint32_t i = 0; i < MCOTA_PRESET_COUNT && used < room; i++) used += snprintf(reply + used, room - used, "%s%s", i ? "," : "", preset_names[i]);
-#else
-    strcpy(reply, "OK no presets in this firmware");
-#endif
+    if (preset_count() == 0u) {
+      strcpy(reply, "OK no presets on this repeater");
+    } else {
+      int used = snprintf(reply, room, "OK active=%s state=%s lock=%s errors=%u rev=%u list=", preset_text(preset_active(), false),
+                          preset_applied == preset_hash(preset_active()) ? "applied" : "pending", settings_locked ? "on" : "off", (unsigned)preset_failed, (unsigned)node.settings_rev);
+      for (uint32_t i = 0; i < preset_count() && used < room; i++) used += snprintf(reply + used, room - used, "%s%s", i ? "," : "", preset_text(i, false));
+    }
   } else if (memcmp(arg, "preset ", 7) == 0) {
-#if MCOTA_PRESET_COUNT > 0
     int found = preset_index(arg + 7);
     if (found < 0) {
       strcpy(reply, "ERR unknown preset, list with ota preset");
     } else {
       preset_apply((uint32_t)found);
-      snprintf(reply, room, "OK %s applied, %u errors", preset_names[found], (unsigned)preset_failed);
+      snprintf(reply, room, "OK %s applied, %u errors", preset_text((uint32_t)found, false), (unsigned)preset_failed);
     }
-#else
-    strcpy(reply, "ERR no presets in this firmware");
-#endif
   } else if (strcmp(arg, "locksettings") == 0) {
     strcpy(reply, settings_locked ? "OK on" : "OK off");
   } else if (strcmp(arg, "locksettings on") == 0 || strcmp(arg, "locksettings off") == 0) {

@@ -766,9 +766,15 @@ def preset_commands(preset):
     return "\n".join(f"set {key} {value}" for key, value in preset.get("values", {}).items())
 
 
+def built_with(folder, revision):
+    path = os.path.join(folder, "firmware")
+    marks = (f"+{revision}.bin", f"+{revision}-test.bin")
+    return os.path.isdir(path) and any(name.endswith(marks) for name in os.listdir(path))
+
+
 def load_settings(folder):
     path = settings_path(folder)
-    data = {"revision": 0, "digest": "", "presets": []}
+    data = {"revision": 0, "digest": "", "presets": [], "config": 0, "config_digest": "", "builtin": None}
     if os.path.exists(path):
         with open(path, encoding="utf-8") as fh:
             data.update(json.load(fh))
@@ -780,17 +786,42 @@ def load_settings(folder):
     for preset in data["presets"]:
         check_preset(preset)
     key = public_key(folder)
-    parts = [key.hex() if key else "", [entry["public"] for entry in retired_keys(folder)], [(p["name"], preset_commands(p)) for p in data["presets"]]]
+    parts = [key.hex() if key else "", [entry["public"] for entry in retired_keys(folder)]]
     custom = load_custom(folder)
     if custom["source"] != DEFAULT_SOURCE or any(custom["flags"].values()) or local_digest(folder):
         parts.append([custom["source"], sorted((name, " ".join(flags.split())) for name, flags in custom["flags"].items() if flags.strip()), local_digest(folder)])
     parts.append(firmware_digest())
     image = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
+    presets = hashlib.sha256(json.dumps([(p["name"], preset_commands(p)) for p in data["presets"]]).encode()).hexdigest()[:16]
+    changed = False
+    if presets != data.get("config_digest"):
+        data["config"] = int(data.get("config", 0)) + 1
+        data["config_digest"] = presets
+        changed = True
     if image != data.get("digest"):
         data["revision"] = int(data.get("revision", 0)) + 1
         data["digest"] = image
+        data["builtin"] = None
+        changed = True
+    snapshot = {"config": data["config"], "presets": json.loads(json.dumps(data["presets"]))}
+    if data.get("builtin") != snapshot and (data.get("builtin") is None or not built_with(folder, data["revision"])):
+        data["builtin"] = snapshot
+        changed = True
+    if changed:
         save_settings(folder, data)
     return data
+
+
+def settings_presets(folder):
+    return [(preset["name"], preset_commands(preset).split("\n") if preset.get("values") else []) for preset in load_settings(folder)["presets"]]
+
+
+def build_order(label):
+    parsed = parse_label(label)
+    if not parsed:
+        return 0
+    numbers = [int(part) for part in re.findall(r"\d+", parsed[0])][:3] + [0, 0, 0]
+    return (min(parsed[1], 4095) << 20) | (min(numbers[0], 15) << 16) | (min(numbers[1], 255) << 8) | min(numbers[2], 255)
 
 
 def save_settings(folder, data):
@@ -809,11 +840,13 @@ def config_header(folder):
     if retired:
         lines.append(f"#define MCOTA_RETIRED_COUNT {len(retired)}")
         lines.append("#define MCOTA_RETIRED_KEYS {" + ", ".join("{" + ", ".join(f"0x{value:02x}" for value in key) + "}" for key in retired) + "}")
-    lines.append(f"#define MCOTA_PRESET_COUNT {len(data['presets'])}")
-    if data["presets"]:
+    builtin = data["builtin"]
+    lines.append(f"#define MCOTA_PRESET_REVISION {builtin['config']}")
+    lines.append(f"#define MCOTA_PRESET_COUNT {len(builtin['presets'])}")
+    if builtin["presets"]:
         quote = lambda text: '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
-        lines.append("#define MCOTA_PRESET_NAMES {" + ", ".join(quote(p["name"]) for p in data["presets"]) + "}")
-        lines.append("#define MCOTA_PRESET_COMMANDS {" + ", ".join(quote(preset_commands(p)) for p in data["presets"]) + "}")
+        lines.append("#define MCOTA_PRESET_NAMES {" + ", ".join(quote(p["name"]) for p in builtin["presets"]) + "}")
+        lines.append("#define MCOTA_PRESET_COMMANDS {" + ", ".join(quote(preset_commands(p)) for p in builtin["presets"]) + "}")
     return "\n".join(lines) + "\n"
 
 
@@ -882,7 +915,7 @@ def build_version(name, version, commit, folder, test=False, switch=False):
     esp = target.get("kind") == "esp32"
     compiler = None if esp else pin_compiler(work, tools, switch)
     env = dict(os.environ)
-    env["PLATFORMIO_BUILD_FLAGS"] = "-DMCOTA_TAG='\"%s\"'" % label + " " + " ".join(load_custom(folder)["flags"].get(name, "").split())
+    env["PLATFORMIO_BUILD_FLAGS"] = "-DMCOTA_TAG='\"%s\"'" % label + " -DMCOTA_BUILD=%u " % build_order(label) + " ".join(load_custom(folder)["flags"].get(name, "").split())
     environment = target["env_test"] if test else target["env"]
     log = os.path.join(tools, f"build-{name}-{label}.log")
     if os.path.exists(log):
