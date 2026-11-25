@@ -1310,7 +1310,15 @@ def cmd_update(args):
         collect_updates(args)
         return
     old_versions = {}
-    send_packages(args, [], old_versions, known_key_ids(home), make_resolver(args, old_versions), lambda: set(load_repeaters(home)),
+    import time
+    known = {"at": 0.0, "ids": set()}
+
+    def mine():
+        if time.monotonic() - known["at"] > 5.0:
+            known.update(at=time.monotonic(), ids=set(load_repeaters(home)))
+        return known["ids"]
+
+    send_packages(args, [], old_versions, known_key_ids(home), make_resolver(args, old_versions), mine,
                   lambda: settings_package(home), lambda: absent_repeaters(args))
 
 

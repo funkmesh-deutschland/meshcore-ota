@@ -203,7 +203,9 @@ class Dashboard:
             sent_ms = sum(p.sent_ms for p in self.providers)
             elapsed = max(time.monotonic() - self.started, 1.0)
             used = sent_ms / 10.0 / elapsed
-            grid.add_row("Actual", Text(f"{used:.2f} % since start" + (f", channel {air['heard']:.2f} % in use by others" if air else ""), style=TEAL if used <= limit * 1.05 else ORANGE))
+            grid.add_row("Actual", Text(f"{used:.2f} % since start", style=TEAL if used <= limit * 1.05 else ORANGE))
+            if air:
+                grid.add_row("Channel", Text(f"{air['heard']:.2f} % in use by others", style=DARK))
             grid.add_row("Budget", Text(f"{budget.ms / 1000:.1f} s saved of at most 10 s", style=DARK))
             grid.add_row("", bar(budget.ms, 10000.0, 30))
             grid.add_row("Sent", f"{sent} packets · {sent_ms / 1000:.0f} s airtime")
@@ -236,7 +238,7 @@ class Dashboard:
     def peers_panel(self):
         grid = table("Repeaters", [("Repeater", {"style": "bold"}), ("Firmware", {}), ("Status", {"ratio": 1}),
                                   ("Signal", {"justify": "right"}), ("last heard", {"justify": "right", "style": SOFT})])
-        colors = {"up_to_date": TEAL, "loading": BASE, "carrying": ORANGE, "rolled_back": RED, "rejected": RED, "unreachable": SOFT, "unknown": SOFT}
+        colors = {"up_to_date": TEAL, "loading": BASE, "complete": BASE, "waiting": BASE, "carrying": ORANGE, "rolled_back": RED, "rejected": RED, "unreachable": SOFT, "unknown": SOFT}
         rows = 0
         for entry in (self.state or {}).get("repeaters", []):
             if entry["state"] in ("hop", "relay") or (entry["state"] == "unknown" and not entry["text"] and not entry["mine"]):
