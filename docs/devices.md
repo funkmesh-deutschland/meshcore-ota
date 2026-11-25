@@ -37,6 +37,7 @@ The bootloader of the device, the SoftDevice and the MeshCore file system with t
 | Firmware (slot A) | from `0x28000`, 194 pages (776 KB) | from `0x29000`, 193 pages (772 KB) | from `0x2A000`, 192 pages (768 KB) |
 | Status and journal | `0xEA000`, 2 pages | `0xEA000`, 2 pages | `0xEA000`, 2 pages |
 | Keys, preset, lock | `0xEC000`, 1 page | `0xEC000`, 1 page | `0xEC000`, 1 page |
+| Settings package | file `/mcota_cfg` in the MeshCore file system | the same | the same |
 
 On the Xiao, the external flash on the board (2 MB) holds the new firmware (slot B), the scratch page for the swap and the package store. On devices without external flash, firmware and package store share slot A: the package is stored in the free space behind the running firmware.
 
@@ -44,7 +45,7 @@ On the Xiao, the external flash on the board (2 MB) holds the new firmware (slot
 
 ### With external flash
 
-The repeater writes every finished page to slot B. To apply, the loader swaps both slots page by page, with a journal. Afterwards the old firmware is in slot B and serves as the rollback copy. The package stays in the package store and is passed on after the update. Details on the loader are in [concept.md](concept.md).
+The repeater writes every finished page to slot B. To apply, the loader swaps both slots page by page, with a journal. Afterwards the old firmware is in slot B and serves as the rollback copy. The package stays in the package store and is passed on after the update. The store has three slots. Besides its own package the repeater keeps older ones for stragglers and collects packages for other device types, see [concept.md](concept.md). Details on the loader are in [concept.md](concept.md).
 
 ### Without external flash
 
@@ -77,6 +78,7 @@ MeshCore-OTA does not change the partition table of MeshCore and needs exactly t
 | package for passing on | the end of the other app partition |
 | status of the update | NVS, namespace `meshcore-ota`, entry `status` |
 | keys, preset, lock | NVS, namespace `meshcore-ota`, entry `local` |
+| settings package | file `/mcota_cfg` in the MeshCore file system |
 
 Everything MeshCore-OTA writes raw is in the other app partition, never in the running one.
 
@@ -88,7 +90,7 @@ For ESP32 the core is configured for at most 448 pages of firmware (`MCOTA_MAX_P
 | 1.875 MB | 1,792 KB | 128 KB |
 | 2.75 MB and more | 1,792 KB | 1 MB |
 
-With small app partitions only a small package fits into the store. Such a repeater can apply a larger update itself but cannot pass it on to neighbours (`ota info` shows `no-sharing`). If the firmware grows beyond the available space, the build aborts with a message.
+From 96 KB on the store has three slots, and the repeater also collects packages for other device types. With small app partitions only a small package fits into the store. Such a repeater can apply a larger update itself but cannot pass it on to neighbours (`ota info` shows `no-sharing`). If the firmware grows beyond the available space, the build aborts with a message.
 
 After a confirmed update the package is at the end of the partition that is now running. The new firmware copies it once to the end of the other partition and records that in NVS (entry `mirror`). From there it passes the package on.
 

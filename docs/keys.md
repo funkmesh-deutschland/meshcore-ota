@@ -62,6 +62,7 @@ Things to note:
 - Keep `keys/retired-<id>.key` until all repeaters have been switched over. If the file is missing, no update can be signed any more for repeaters with the previous key.
 - Repeaters that cannot be reached over the air need the new firmware once over Bluetooth or USB (menu item 3).
 - A repeater passes on the update containing the key change only as long as it has not applied it itself. After that it no longer accepts the signature made with the previous key and discards the stored package. Neighbours that have not loaded it by then receive it from the computer.
+- Settings packages are signed with the new key from the change on. A repeater that still carries the previous key takes them over once it runs the firmware with the new key.
 - The change does not protect retroactively. As long as a repeater still carries the old firmware, it accepts updates signed with the previous key.
 
 ## Loss of the key
@@ -71,5 +72,5 @@ Without the private key no update can be signed any more. The repeaters then nee
 ## What the key does not protect
 
 - Access over USB allows any firmware, regardless of the key.
-- The admin password of a repeater is not sufficient to install firmware over the air. It does, however, allow the commands `ota apply`, `ota drop`, `ota preset` and `ota locksettings`.
+- The admin password of a repeater is not sufficient to install firmware or to distribute settings over the air. It does, however, allow the commands `ota apply`, `ota drop`, `ota preset` and `ota locksettings`.
 - The computer does not need a key to send a finished package (`meshcore-ota send`). Verification takes place on every repeater.

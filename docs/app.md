@@ -48,7 +48,7 @@ meshcore-ota --dir /home/user/meshcore-ota devices
 
 The device type is a short name that the firmware also reports over the air, for example `xiao_nrf52` or `rak4631`. For other devices it is derived from the name of the MeshCore environment (lower case, without `_repeater`, at most 15 characters).
 
-The name of a build is made up of the MeshCore version and the revision of the settings, for example `v1.18.0+3`. Test firmware additionally carries `-test`.
+The name of a build is made up of the MeshCore version and a build number, for example `v1.18.0+3`. The number rises when the key, the firmware source or the MeshCore-OTA part of the firmware changes, see [settings.md](settings.md). Test firmware additionally carries `-test`.
 
 Keep the folder `firmware`. A package only fits exactly the file that is running on the repeater. A new build of the same version can differ in small details and then no longer fits.
 
@@ -62,7 +62,7 @@ without a subcommand opens the menu. On first start the program creates the fold
 
 ![Main menu](images/menu.png)
 
-Above the menu are the version, the folder, the key ID, the companion port, the released versions, the revision of the settings and the airtime.
+Above the menu are the version, the folder, the key ID, the companion port, the released versions, the build number of the firmware, the revision of the settings with the names of the presets, the airtime with its upper limit and, if switched on, the port of the web interface.
 
 | Menu item | What it does |
 | --- | --- |
@@ -101,7 +101,7 @@ If the build is already present in `firmware/`, the program does not build it ag
 
 ### My repeaters
 
-Repeaters that have responded in the dashboard appear in the list automatically. Further ones can be added from the companion's contacts. For repeaters in this list that do not respond and whose route is unknown, the dashboard has the companion run a path discovery.
+Repeaters that have responded in the dashboard appear in the list automatically. Further ones can be added from the companion's contacts, or in the web interface with their ID, where a position for the map can be entered as well, see [web.md](web.md). For repeaters in this list that do not respond and whose route is unknown, the dashboard has the companion run a path discovery.
 
 ### Companion connection
 
@@ -136,7 +136,7 @@ For a repeater that is loading, the status shows the progress packet by packet:
 | `51 of 110 packets sent (46 %), 59 to go` | radio packets of this update that are sent and that are still waiting. The bar below follows this count |
 | `page 74 of 90: packet 5 of 8 sent` | the page in progress. A page whose difference does not fit into one packet is split into several. Small pages share a packet, the line then counts the pages sent |
 | `next packet in 3:53 min, about 4 h 58 min left` | time until the airtime credit allows the next packet, and the time for the remaining packets at the configured airtime |
-| `waiting for the repeater` | everything requested is sent. The repeater checks what it has and requests what is missing |
+| `all 110 packets sent, waiting for the repeater` | everything requested is sent. The repeater checks what it has and requests what is missing |
 
 The packet count rises again when a repeater reports packets as lost. The remaining time covers sending only. Checking, applying and the trial boot on the repeater come on top.
 

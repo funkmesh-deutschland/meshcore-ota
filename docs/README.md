@@ -31,5 +31,5 @@ MeshCore-OTA delivers firmware updates to MeshCore repeaters over LoRa. The shor
 | `firmware/` | integration with MeshCore (`mcota/`), patch for MeshCore, linker scripts, build script |
 | `loader/nrf52/` | loader for nRF52840 |
 | `sim/` | simulation and tests |
-| `tools/` | the program `meshcore-ota` |
+| `tools/` | the program `meshcore-ota`, with the page of the web interface in `tools/web/` |
 | `.github/workflows/` | tests, building the executables, releases |

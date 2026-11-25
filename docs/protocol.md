@@ -25,7 +25,7 @@ A node with stored blocks announces what it can deliver.
 | 4 | ID of the sender, the first 4 bytes of its public key |
 | 8 | ID of the update, the first 8 bytes of the SHA-256 of the manifest |
 | 8 | ID of the signing key |
-| 4 | checksum of the device type, the first 4 bytes of the SHA-256 of its name |
+| 4 | checksum of the device type the update is for, the first 4 bytes of the SHA-256 of its name |
 | 4 | size of the source firmware |
 | 8 | beginning of the SHA-256 of the source firmware |
 | 2 | number of pages |

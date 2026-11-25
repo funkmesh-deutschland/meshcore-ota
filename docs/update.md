@@ -73,4 +73,4 @@ pip install -r tools/requirements.txt pyinstaller
 python tools/build_app.py
 ```
 
-The result is in `dist/meshcore-ota` (on Windows `dist/meshcore-ota.exe`). Besides the program, the executable contains the sources for the firmware build: `core/`, `firmware/mcota/`, `firmware/boards/`, `firmware/esp32/`, `firmware/meshcore.patch` and `loader/nrf52/`.
+The result is in `dist/meshcore-ota` (on Windows `dist/meshcore-ota.exe`). Besides the program, the executable contains the sources for the firmware build: `core/`, `firmware/mcota/`, `firmware/boards/`, `firmware/esp32/`, `firmware/meshcore.patch` and `loader/nrf52/`, and the page of the web interface from `tools/web/`.
